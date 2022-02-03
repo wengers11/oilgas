@@ -30,7 +30,7 @@ library(randomForest)
 library(earth)
 library(class)##for knn
 library(sp) ##for spatial analysis, kriging
-library(rgeos) ## for spatial analysis
+#library(rgeos) ## for spatial analysis
 library(geosphere) ## for spatial analysis
 library(gstat)##for kriging
 library(EnvStats) ##for pareto distribution
