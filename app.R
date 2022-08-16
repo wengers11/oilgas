@@ -12,6 +12,14 @@
 
 ##https://stackoverflow.com/questions/32363998/function-to-calculate-geospatial-distance-between-two-points-lat-long-using-r
 
+# install.packages(c("shiny", "shinyWidgets","dplyr","tidyr","lubridate","ggplot2","ggmap","stringr",
+#                     "data.table","Metrics","zoo","factoextra","cluster","randomForest",
+#                     "earth","class","sp","rgeos","geosphere","gstat","EnvStats",
+#                     "gplots","caret","tidyselect","RColorBrewer","RSQLite"))
+# install.packages(c("shinyWidgets","stringr",
+#                    "data.table","Metrics","zoo","factoextra","cluster","randomForest",
+#                    "earth","class","sp","rgeos","geosphere","gstat","EnvStats",
+#                    "gplots","caret","RColorBrewer","RSQLite"))
 
 library(shiny)
 library(shinyWidgets)
@@ -30,7 +38,7 @@ library(randomForest)
 library(earth)
 library(class)##for knn
 library(sp) ##for spatial analysis, kriging
-#library(rgeos) ## for spatial analysis
+library(rgeos) ## for spatial analysis
 library(geosphere) ## for spatial analysis
 library(gstat)##for kriging
 library(EnvStats) ##for pareto distribution
@@ -39,13 +47,13 @@ library(gridExtra) ##Add table to plot
 library(caret) ##bayesian modeling
 library(tidyselect)
 library(RColorBrewer)
+library(gbm)
+library(glmnet)
 
 #setwd("C:/Users/Wesley Engers/Documents/Eagle Ford Oil and Gas Project/Monthly Data/Oil App")
 #setwd("~/Eagle Ford Oil and Gas Project/Monthly Data/Oil App/Oil_Prediction_App")
 
 eagle.data2<-readRDS("Eagle Data 2.rds")
-#power.data<-readRDS("Power Data.rds")
-#power.coef.df<-readRDS("Power Coef.rds")
 cluster.data<-readRDS("cluster data2.rds")
 cluster.data<-cluster.data%>%left_join(select(eagle.data2,API,Surf.Lat,Surf.Lon,API.Gravity))%>%
   mutate(Avg.Prop.per.GPI=Avg.Prop.per.Lateral,Avg.Fluid.per.GPI=Avg.Fluid.per.Lateral)%>%
@@ -102,16 +110,13 @@ ui <- fluidPage(
             tabPanel("Inputs & Info",
                 sidebarPanel(
                    textInput("API_num", "API #: ", "4201334338"),
-                   
-                   # varSelectInput("error_var", "Error Chart Variable:", select(cluster.data,Total.Error.1yr,Total.Error.2yr,Total.Error.3yr,Total.Error.4yr,Total.Error.5yr), selected = NULL, multiple = FALSE,
-                   #                selectize = TRUE, width = NULL, size = NULL)
                 ),
                 
                 mainPanel(
                    h3(textOutput("info_header")),
                    textOutput("info"),
                    h3(textOutput("info_chart_header")),
-                   plotOutput("PLPlot"),
+                   plotOutput("PLPlot")
                 )
                      ),
 
@@ -144,10 +149,11 @@ ui <- fluidPage(
                         selectizeInput("clust_map","Select Cluster to Display on Map",seq(1,2),multiple = TRUE),
                         varSelectInput("density_var", "Density Chart Variable:", select(rf.prod.data,Oil_Prod_2yr:TVD,Lateral..ft.:API.Gravity,Month.1.BOE:BOE_Cum_6mon), selected =c("BOE_Prod_2yr"), multiple = FALSE,
                                        selectize = TRUE, width = NULL, size = NULL),
-                        varSelectInput("rf_var", "Random Forest Input Variables:", select(rf.prod.data,-API,-Well.Name), selected = c("TVD","TOC"), multiple = TRUE,
+                        varSelectInput("rf_var", "Variable Importance Input Variables:", select(rf.prod.data,-API,-Well.Name), selected = c("TVD","TOC"), multiple = TRUE,
                                        selectize = TRUE, width = NULL, size = NULL),
-                        varSelectInput("rf_target_var", "Random Forest Target Variable:", select(rf.prod.data,BOE_Prod_2yr,Oil_Prod_2yr,Gas_Prod_2yr,Cumulative.Oil.Production...Mstb.,Cumulative.Gas.Production...MMscf.,BOE_Cum_6mon), selected = "BOE_Prod_2yr", multiple = FALSE,
+                        varSelectInput("rf_target_var", "Variable Importance Target Variable:", select(rf.prod.data,BOE_Prod_2yr,Oil_Prod_2yr,Gas_Prod_2yr,Month.1.BOE:BOE_Cum_6mon,Cumulative.Oil.Production...Mstb.,Cumulative.Gas.Production...MMscf.), selected = "BOE_Prod_2yr", multiple = FALSE,
                                        selectize = TRUE, width = NULL, size = NULL),
+                        numericInput("cl_tree_num","Number of Trees for RF and GB", value = 500)
                      ),
                      
                      mainPanel(
@@ -159,19 +165,12 @@ ui <- fluidPage(
                         h3(textOutput("clust_table_name")),
                         tableOutput("clust_summary"),
                         plotOutput("rand_forest"),
+                        plotOutput("cl_bayes.boe.importance"),
+                        plotOutput("cl_gbm.boe.importance"),
                         h3(textOutput("clust_table2_name")),
                         tableOutput("ClustTable")
                      )
                   ),
-            
-            # tabPanel("Densities",
-            #          h3(textOutput("dense_name")),
-            #          plotOutput("density_error"),
-            #          plotOutput("density_percent_error"),
-            #          plotOutput("density_power"),
-            #          #plotOutput("density_power2"),
-            #          plotOutput("density_leading"),
-            #          plotOutput("density.max.oil")),
             
             tabPanel("Rev/Cost Analysis",
                      sidebarPanel(
@@ -186,8 +185,6 @@ ui <- fluidPage(
                        numericInput("disc_fact","Annual Discount Factor (for NPV):",value=.03,step = .01)),
 
                      mainPanel(
-                       #tableOutput("clust.joined.table"),
-                       #tableOutput("rev.cost.table"),
                        plotOutput("cum.profit.well.plot"),
                        plotOutput("cum.profit.clust.plot"),
                        plotOutput("profit.well.plot"),
@@ -224,7 +221,6 @@ ui <- fluidPage(
                      
                      mainPanel(
                        tableOutput("PL.Error.Table"),
-                       #tableOutput("PL.results.table"),
                        tableOutput("PL.Well.Summary"),
                        plotOutput("PL_density"),
                        tableOutput("PL.API.Table"),
@@ -248,7 +244,7 @@ ui <- fluidPage(
                        varSelectInput("rf_prod_var", "Random Forest Input Variables:", select(rf.prod.data,-(API:BOE_Prod_2yr),-Cumulative.Oil.Production...Mstb.,-Cumulative.Gas.Production...MMscf.,-On.Stream), selected = c("Thickness","TVD"), multiple = TRUE,
                                       selectize = TRUE,width = NULL, size = NULL),
                        numericInput("train_prop","Training Proportion of Data",value = 0.7, step = .01),
-                       numericInput("tree_num","Tree Number View", value=2,step=1),
+                       numericInput("tree_num","Tree Number View (for download only)", value=2,step=1),
                        downloadButton("Download.rf.boe.error.train.data","Download Train Data & RF Errors"),
                        downloadButton("Download.rf.boe.error.test.data","Download Test Data & RF Errors"),
                        prettyToggle(
@@ -264,7 +260,8 @@ ui <- fluidPage(
                        downloadButton("downloadTrainError", "Download RF Cluster Train Errors"),
                        downloadButton("downloadTestError", "Download RF Cluster Test Errors"),
                        downloadButton("downloadTLErrors", "Download TL Error Table"),
-                       downloadButton("downloadTL_Var_Imp", "Download TL Var Importance Table"),
+                       downloadButton("downloadTL_RF_Var_Imp", "Download TL RF Var Importance Table"),
+                       downloadButton("downloadTL_Bayes_Var_Imp", "Download TL Bayes Var Importance Table"),
                        downloadButton("rf.clust.tree.dl","Download Tree View"),
                        numericInput("TL_min","Min TL Clusters",value=5, step=1),
                        numericInput("TL_max","Max TL Clusters",value=5, step=1),
@@ -333,7 +330,7 @@ ui <- fluidPage(
                         selectizeInput("tl_field_B","Select Clusters for Field B",seq(1,20),selected=seq(3,4),multiple = TRUE),
                         numericInput("tl_train_prop","Train Proportion from Field A",1),
                         numericInput("tl_validation_prop","Validation Proportion from Field B",.3),
-                        numericInput("tl_test_prop","Train Prop from Field B excl. Validation",1),
+                        numericInput("tl_test_prop","Train Prop from Field B excl. Validation",.95),
                         prettyToggle( ##Use this toggle to prevent maps and TL from being created too soon
                            inputId = "tl_toggle", value = FALSE,
                            label_on = "Run Cluster TL", icon_on = icon("check"),
@@ -419,7 +416,7 @@ ui <- fluidPage(
                      label_off = "Don't run Kriging & Random Forest", icon_off = icon("remove")),
                   prettyToggle(
                      inputId = "clust_toggle", value = FALSE,
-                     label_on = "Import Krig_TL Clusters to Clustering", icon_on = icon("check"),
+                     label_on = "Import Krig_TL Clusters to Other Tabs as Clusters", icon_on = icon("check"),
                      label_off = "Using Clustering Inputs", icon_off = icon("remove")),
                ),
                
@@ -446,6 +443,63 @@ ui <- fluidPage(
                   tableOutput("krig_rf_data_table"),
                   plotOutput("krig_MapPlot"),
                   plotOutput("krig_boe_pred_map")
+               )
+      ),
+      
+      tabPanel("Ensemble Learning",
+               sidebarPanel(
+
+                 varSelectInput("el_filter_var1", "Filter Var 1", select(rf.prod.data,TOC,Permeability...d.,Brittleness,Porosity,Thickness,Vclay,TVD,GPI,Lateral..ft.,Proppant.per.GPI..lb.ft.,Fluid.per.GPI..gal.ft.,API.Gravity),
+                                selected = "TOC", multiple = FALSE,
+                                selectize = TRUE, width = NULL, size = NULL),
+                 varSelectInput("el_filter_var2", "Filter Var 2", select(rf.prod.data,TOC,Permeability...d.,Brittleness,Porosity,Thickness,Vclay,TVD,GPI,Lateral..ft.,Proppant.per.GPI..lb.ft.,Fluid.per.GPI..gal.ft.,API.Gravity),
+                                selected = "TOC", multiple = FALSE,
+                                selectize = TRUE, width = NULL, size = NULL),
+                 varSelectInput("el_filter_var3", "Filter Var 3", select(rf.prod.data,TOC,Permeability...d.,Brittleness,Porosity,Thickness,Vclay,TVD,GPI,Lateral..ft.,Proppant.per.GPI..lb.ft.,Fluid.per.GPI..gal.ft.,API.Gravity),
+                                selected = "TOC", multiple = FALSE,
+                                selectize = TRUE, width = NULL, size = NULL),
+                 varSelectInput("el_target_stress", "Stress Test Target Variable", select(rf.prod.data,BOE_Prod_2yr,Oil_Prod_2yr,Gas_Prod_2yr,Month.1.BOE:BOE_Cum_6mon),
+                                selected = "BOE_Prod_2y", multiple = FALSE,
+                                selectize = TRUE, width = NULL, size = NULL),
+                 varSelectInput("el_target_var", "Ensemble Learning Target Variable", select(rf.prod.data,BOE_Prod_2yr,Oil_Prod_2yr,Gas_Prod_2yr,Month.1.BOE:BOE_Cum_6mon),
+                                selected = "BOE_Prod_2y", multiple = FALSE,
+                                selectize = TRUE, width = NULL, size = NULL),
+                 numericInput("el_low","Cut Low (Stress Test only)", value = .6),
+                 numericInput("el_high","Cut High (Stress Test only)", value = 0.4),
+                 
+                 numericInput("el_start","Cut Start", value = .1),
+                 numericInput("el_end","Cut End", value = 0.9),
+                 numericInput("el_step", "Cut Steps", value=0.1),
+                 varSelectInput("el_formula_var", "Input Variables for Models:", select(rf.prod.data,-(API:GOR_2yr),-(Fluid.Type:County)), selected = c("TVD","TOC"), multiple = TRUE,
+                                selectize = TRUE, width = NULL, size = NULL),
+                 numericInput("el_weight_step","Weighting Step",value = 0.1),
+                 numericInput("el_num_tree","Tree Numbers for RF & GB",value = 1000,min = 0,step = 100),
+                 numericInput("el_train_prop","Training Prop for Overlap Data",value = 0.7,min=0,max=1),
+                 
+                 prettyToggle(
+                   inputId = "EL_toggle", value = FALSE,
+                   label_on = "Run Ensemble Learning", icon_on = icon("check"),
+                   label_off = "Don't run Ensemble Learning", icon_off = icon("x")),
+                 
+                 downloadButton("download_EL_Best_Weights","Download EL Best Weights"),
+                 
+                 prettyToggle(
+                   inputId = "EL_toggle_st", value = FALSE,
+                   label_on = "Run Stress Test", icon_on = icon("check"),
+                   label_off = "Don't run Stress Test", icon_off = icon("x")),
+                 
+                 downloadButton("download_EL_Stress_Test","Download Stress Test Errors")
+                ),
+
+               mainPanel(
+                 h3(textOutput("EL_Stress_Test_text")),
+                 tableOutput("EL_Strees_Test_Table"),
+                 h3(textOutput("EL_low_text")),
+                 tableOutput("EL_Low_df"),
+                 h3(textOutput("EL_high_text")),
+                 tableOutput("EL_High_df"),
+                 h3(textOutput("EL_table_text")),
+                 tableOutput("EL_Table")
                )
       )
       
@@ -495,33 +549,6 @@ server <- function(input, output, session) {
       my_hist
    })
    
-   # output$PowerCoefTable<-renderTable({
-   #   req(input$password==my_password&input$go)
-   #   filter.power<-cluster.data%>%filter(Power.Coef<=input$Power_max,
-   #                                        Power.Coef>=input$Power_min,
-   #                                        Leading.Coef>=input$Leading_min,
-   #                                        Leading.Coef<=input$Leading_max)
-   #   filter.power
-   # })
-   
-   # output$PLPlot <-renderPlot({
-   #   req(input$password==my_password&input$go)
-   #   ##Sample Curve plots
-   #   #well.api="4201334338"
-   #   this.coef<-cluster.data%>%filter(API==input$pl_api)%>%select(Leading.Coef,Power.Coef)
-   #   well.graph.data<-filter(power.data,API==input$pl_api)%>%left_join(power.coef.df)%>%
-   #     mutate(Monthly.Production=Product.per.day..normalized.BOE*30,
-   #            Predicted.Production= Leading.Coef*(Months.On.Production)^Power.Coef)
-   #   well.graph.data2<-select(well.graph.data,Months.On.Production,Monthly.Production,Predicted.Production)%>%
-   #     gather("Curve_Type","Production",-Months.On.Production)
-   #   
-   #   sample.prod.plot<-ggplot(well.graph.data2,aes(x=Months.On.Production,y=Production,color=Curve_Type))+
-   #     geom_point(size=2)+geom_line(size=1.2)+
-   #     ggtitle(paste("API: ",input$pl_api,"\nOil (BOE) Prod=",round(this.coef$Leading.Coef[1],2),"*Months.On.Prod^",round(this.coef$Power.Coef[1],2) ,"\nWell Predicted vs. Actual Production"))+
-   #     theme(text = element_text(size=20))
-   #   sample.prod.plot
-   # })
-   # 
    output$PLPlot<-renderPlot({
       req(input$password==my_password&input$go)
       model.data<-rev.cost.joined.data()%>%filter(API==input$API_num, Months.On.Production>=2)%>%
@@ -568,7 +595,8 @@ server <- function(input, output, session) {
      map_plot
      
    })
-   
+
+##Clustering tab
    ClustScale<-reactive({
      req(input$password==my_password&input$go)
      if (length(input$clust_var) == 0){
@@ -591,18 +619,18 @@ server <- function(input, output, session) {
      cluster.data2<-mutate(rf.prod.data,Cluster=factor(ClustData()$cluster))%>%
        filter(Cluster==input$clust_invest)%>%
        select(API,Cluster,Oil_Prod_2yr:API.Gravity,Cumulative.Oil.Production...Mstb.:On.Stream.Year,Month.1.BOE:BOE_Cum_6mon)
-     if(input$clust_toggle){
+     if(input$clust_toggle){ ##imports Clusters from Kriging TL tab if that toggle is selected on Kriging TL tab
         cluster.data2<-import_krig_clust()%>%
            filter(Cluster==input$clust_invest)
      }
      cluster.data2
    })
    
-   ClustData3<-reactive({
+   ClustData3<-reactive({ ##Goes into Cost/Rev tab
      req(input$password==my_password&input$go)
      cluster.data3<-mutate(rf.prod.data,Cluster=factor(ClustData()$cluster))%>%
        select(API,Cluster)
-     if(input$clust_toggle){
+     if(input$clust_toggle){  ##imports Clusters from Kriging TL tab if that toggle is selected on Kriging TL tab
         cluster.data3<-import_krig_clust()%>%
            select(API,Cluster)
      }
@@ -651,7 +679,6 @@ server <- function(input, output, session) {
       krig_import_df<-krig_rf_data()%>%select(API)%>%left_join(rf.prod.data,by=c("API"="API"))%>%
          mutate(Cluster=factor(krig_clust_model()$cluster))
       krig_import_df
-      #head(krig_import_df)
    })
    
    output$import_krig_table_name<-renderText({
@@ -660,7 +687,6 @@ server <- function(input, output, session) {
    
    output$import_krig_display<-renderTable({
       req(input$password==my_password&input$go&input$clust_toggle)
-      #krig_import_df<-krig_rf_data()%>%left_join(rf.prod.data,by=c("API"="API"))
       head(import_krig_clust())
    })
    
@@ -730,13 +756,7 @@ server <- function(input, output, session) {
                  Avg.Month.5.BOE=mean(Month.5.BOE),
                  Avg.Month.6.BOE=mean(Month.6.BOE),
                  Avg.BOE_Cum_6mon=mean(BOE_Cum_6mon))
-                 #Avg.Power.Coef=mean(Power.Coef),
-                 #Avg.Leading.Coef=mean(Leading.Coef),
-                 #Avg.Cum.1yr.Oil=mean(Cum.1yr.Oil),
-                 #Avg.Cum.2yr.Oil=mean(Cum.2yr.Oil),
-                 #Avg.Cum.3yr.Oil=mean(Cum.3yr.Oil),
-                 #Avg.Cum.4yr.Oil=mean(Cum.4yr.Oil),
-                 #Avg.Cum.5yr.Oil=mean(Cum.5yr.Oil))
+
      cluster.summary
    })
    
@@ -750,17 +770,6 @@ server <- function(input, output, session) {
         cluster.data2<-import_krig_clust()
      }
      
-     # 
-     # rf_model_data<-krig_rf_data()%>%filter(API %in% rf.clust.data$API)
-     # set.seed(107)
-     # rf_model<-randomForest(BOE_Prod_2yr ~ .,data=select(rf_model_data,-API))
-     # rf_model
-     # 
-     # model.data<-cluster.data2%>%dplyr::select(!!!input$rf_target_var,Cluster,Surf.Lon,Surf.Lat,!!!input$rf_var)%>%
-     #   mutate(Surf.Lon.Scaled=scale(Surf.Lon),Surf.Lat.Scaled=scale(Surf.Lat))%>%
-     #   filter(Cluster==input$clust_invest)%>%
-     #   select(-Surf.Lon,-Surf.Lat,-Cluster)
-     # model.data<-na.omit(model.data)
      
      model.data<-cluster.data2%>%dplyr::select(!!!input$rf_target_var,Cluster,!!!input$rf_var)%>%
         filter(Cluster==input$clust_invest)%>%
@@ -769,20 +778,7 @@ server <- function(input, output, session) {
      
      #BOE_Prod_2yr,Oil_Prod_2yr,Gas_Prod_2yr,Cumulative.Oil.Production...Mstb.,Cumulative.Gas.Production...MMscf.,BOE_Cum_6mon
      set.seed(107)
-       if (input$rf_target_var=="BOE_Prod_2yr"){
-       rf.oil.prod<-randomForest(BOE_Prod_2yr ~ .,data=model.data)
-       }else if (input$rf_target_var=="Oil_Prod_2yr"){
-         rf.oil.prod<-randomForest(Oil_Prod_2yr ~ .,data=model.data)
-       }else if (input$rf_target_var=="Gas_Prod_2yr"){
-         rf.oil.prod<-randomForest(Gas_Prod_2yr ~ .,data=model.data)
-       }else if (input$rf_target_var=="Cumulative.Oil.Production...Mstb."){
-         rf.oil.prod<-randomForest(Cumulative.Oil.Production...Mstb. ~ .,data=model.data)
-       }else if (input$rf_target_var=="Cumulative.Gas.Production...MMscf."){
-         rf.oil.prod<-randomForest(Cumulative.Gas.Production...MMscf. ~ .,data=model.data)
-       }else if (input$rf_target_var=="BOE_Cum_6mon"){
-          rf.oil.prod<-randomForest(BOE_Cum_6mon ~ .,data=model.data)
-       }
-     
+     rf.oil.prod<-randomForest(as.formula(paste(input$rf_target_var,"~ .")), data=model.data, ntree=input$cl_tree_num)
    })  
    
    output$rand_forest<-renderPlot({
@@ -801,329 +797,96 @@ server <- function(input, output, session) {
                    position = position_dodge(0.9), size=3.5)+
          theme_bw()+
          xlab("Variable")+ylab("Variable Importance")+
-         ggtitle(paste0("Cluster ",input$clust_invest," Variable Importance Plot\n(Target: ",input$rf_target_var," )"))+
+         ggtitle(paste0("Cluster ",input$clust_invest," Random Forest Variable Importance Plot\n(Target: ",input$rf_target_var," )"))+
          theme(text = element_text(size=17))+
          coord_flip()
       rf_rel_inf_plot
-
-     #varImpPlot(randForest(),main=paste0("Cluster ",input$clust_invest," Variable Importance Plot (Target: ",input$rf_target_var," )"))
      })
    
-   # output$density_clust_plot<-renderPlot({
-   #   req(input$password==my_password&input$go)
-   #   cluster.data2<-mutate(rf.prod.data,Cluster=factor(ClustData()$cluster))
-   #   
-   #   density.cluster<-ggplot(cluster.data2, aes(x=!!input$density_var,color=factor(Cluster))) + 
-   #     geom_density(alpha=.2,size=1) +ggtitle(paste0("Density of ",input$density_var, " by Cluster"))+ theme(text = element_text(size=20))
-   #   density.cluster
-   # })
-   # 
-   # output$density_power<-renderPlot({
-   #   req(input$password==my_password&input$go)
-   #   cluster.data2<-mutate(rf.prod.data,Cluster=factor(ClustData()$cluster))%>%filter(Cluster==input$clust_invest)%>%
-   #     mutate(Power.Coef=abs(Power.Coef))
-   #   
-   #   breaks.num=max(round(dim(cluster.data2)[[1]]/20,0),10)
-   #   x<-hist(abs(cluster.data2$Power.Coef),breaks.num)
-   #   obs.counts<-x$counts
-   #   best.fit.df<-data.frame(Type=character(),Mean=numeric(),SD=numeric(),Abs.Sum=numeric(),ith=numeric(),jth=numeric())
-   #   data.mean=abs(mean(cluster.data2$Power.Coef))
-   #   data.sd=sd(cluster.data2$Power.Coef)
-   #   data.lmean=mean(log(abs(cluster.data2$Power.Coef)))
-   #   data.lsd=sd(log(abs(cluster.data2$Power.Coef)))
-   #   
-   #   for (i in 0:20){
-   #     test.sd=(.8+.02*i)*(data.sd)
-   #     test.lsd=(.8+.02*i)*(data.lsd)
-   #     for (j in 0:20){
-   #       test.mean=data.mean-2*test.sd+j*test.sd/5
-   #       test.lmean=data.lmean-2*test.lsd+j*test.lsd/5
-   #       
-   #       ##check normal
-   #       y<-pnorm(x$breaks,mean=abs(test.mean),sd=test.sd)
-   #       exp.probs<-(y[2:length(y)]-y[1:(length(y)-1)])
-   #       chisq.norm.df<-data.frame(Obs.Counts=obs.counts,Exp.Counts=exp.probs*sum(obs.counts))%>%
-   #         mutate(Abs.Contribution=abs(Obs.Counts-Exp.Counts))
-   #       abs.diff.value.norm<-sum(chisq.norm.df$Abs.Contribution)
-   #       this.row<-data.frame(Type="Normal",Mean=test.mean,SD=test.sd,Abs.Sum=abs.diff.value.norm,ith=i,jth=j)
-   #       best.fit.df<-rbind(best.fit.df,this.row)
-   #       
-   #       #check log normal
-   #       y<-pnorm(x$breaks,mean=test.lmean,sd=test.lsd)
-   #       exp.probs<-(y[2:length(y)]-y[1:(length(y)-1)])
-   #       chisq.norm.df<-data.frame(Obs.Counts=obs.counts,Exp.Counts=exp.probs*sum(obs.counts))%>%
-   #         mutate(Abs.Contribution=abs(Obs.Counts-Exp.Counts))
-   #       abs.diff.value.norm<-sum(chisq.norm.df$Abs.Contribution)
-   #       this.row<-data.frame(Type="LogNormal",Mean=test.mean,SD=test.sd,Abs.Sum=abs.diff.value.norm,ith=i,jth=j)
-   #       best.fit.df<-rbind(best.fit.df,this.row)
-   #       
-   #       #check gamma
-   #       test.scale<-abs(test.sd^2/test.mean)
-   #       test.shape<-abs(test.mean^2/test.sd^2)
-   #       
-   #       y<-pgamma(x$breaks,scale=test.scale,shape=test.shape)
-   #       exp.probs<-(y[2:length(y)]-y[1:(length(y)-1)])
-   #       chisq.norm.df<-data.frame(Obs.Counts=obs.counts,Exp.Counts=exp.probs*sum(obs.counts))%>%
-   #         mutate(Abs.Contribution=abs(Obs.Counts-Exp.Counts))
-   #       abs.diff.value.norm<-sum(chisq.norm.df$Abs.Contribution)
-   #       this.row<-data.frame(Type="Gamma",Mean=test.mean,SD=test.sd,Abs.Sum=abs.diff.value.norm,ith=i,jth=j)
-   #       best.fit.df<-rbind(best.fit.df,this.row)
-   #       
-   #     }
-   #   }
-   #   best.curve<-filter(best.fit.df,Abs.Sum==min(best.fit.df$Abs.Sum))[1,]
-   #   best.scale<-abs(best.curve$SD^2/best.curve$Mean)
-   #   best.shape<-abs(best.curve$Mean^2/best.curve$SD^2)
-   #   
-   #   density.power.coef<-ggplot(cluster.data2, aes(x=abs(Power.Coef))) + 
-   #     geom_density(alpha=.2,size=1) +
-   #     switch(as.character(best.curve$Type),
-   #            Normal=ggtitle(paste0("Abs Value of Power Coefficients approx. ", best.curve$Type ," with \nmean= ",round(best.curve$Mean,2)," and sd= ",round(best.curve$SD,2),", Count=",dim(cluster.data2)[[1]])),
-   #            LogNormal=ggtitle(paste0("Abs Value of Power Coefficients approx. ", best.curve$Type ," with \nlmean= ",round(data.lmean-2*test.lsd+best.curve$jth*test.lsd/5,2)," and lsd= ",round((.8+.02*best.curve$ith)*(data.lsd),2),", Count=",dim(cluster.data2)[[1]])),
-   #            Gamma=ggtitle(paste0("Abs Value of Power Coefficients approx. ", best.curve$Type ," with \nscale= ",round(best.scale,2)," and shape= ",round(best.shape,2),", Count=",dim(cluster.data2)[[1]])))+
-   #     theme(text = element_text(size=20))+
-   #     switch(as.character(best.curve$Type),
-   #            Normal=stat_function(fun = dnorm, n = 101, args = list(mean = best.curve$Mean, sd = best.curve$SD),color="blue",size=1),
-   #            LogNormal=stat_function(fun = dlnorm, n = 101, args = list(mean = data.lmean-2*test.lsd+best.curve$jth*test.lsd/5, sd = (.8+.02*best.curve$ith)*(data.lsd)),
-   #                                    color="blue",size=1),
-   #            Gamma=stat_function(fun = dgamma, n = 101, args = list(scale = best.scale, shape = best.shape), color="blue",size=1))
-   #    
-   #   density.power.coef
-   # })
-   # 
-   # output$density_power2<-renderPlot({
-   #   req(input$password==my_password&input$go)
-   #   cluster.data2<-mutate(cluster.data,Cluster=factor(ClustData()$cluster))%>%filter(Cluster==input$clust_invest)
-   #   power.scale<-abs(var(cluster.data2$Power.Coef)/mean(cluster.data2$Power.Coef))
-   #   power.shape<-abs((mean(cluster.data2$Power.Coef))^2/var(cluster.data2$Power.Coef))
-   #   
-   #   density.power.coef<-ggplot(cluster.data2, aes(x=abs(Power.Coef))) + 
-   #     geom_density(alpha=.2,size=1) +
-   #     ggtitle(paste0("Power Coefficients approx. Normal with \nmean= ",round(mean(cluster.data2$Power.Coef),2)," and sd= ",round(sd(cluster.data2$Power.Coef),2),", Count=",dim(cluster.data2)[[1]]))+
-   #     theme(text = element_text(size=20))+
-   #     stat_function(fun = dnorm, n = 101, args = list(mean = mean(abs(cluster.data2$Power.Coef)), sd = sd(abs(cluster.data2$Power.Coef))),
-   #                   color="blue",size=1)+
-   #     stat_function(fun = dgamma, n = 101, args = list(scale = power.scale, shape = power.shape),
-   #                   color="green",size=1)+
-   #     stat_function(fun = dlnorm, n = 101, args = list(mean = mean(log(abs(cluster.data2$Power.Coef))), sd = sd(log(abs(cluster.data2$Power.Coef)))),
-   #                   color="red",size=1)
-   #   density.power.coef
-   # })
+   cl_bayes.boe.model<-reactive({
+     req(input$password==my_password&input$go)
+     cluster.data2<-mutate(rf.prod.data,Cluster=factor(ClustData()$cluster))
+     
+     if(input$clust_toggle){
+       cluster.data2<-import_krig_clust()
+     }
+     
+     model.data<-cluster.data2%>%dplyr::select(!!!input$rf_target_var,Cluster,!!!input$rf_var)%>%
+       filter(Cluster==input$clust_invest)%>%
+       select(-Cluster)
+     model.data<-na.omit(model.data)
+     
+     #BOE_Prod_2yr,Oil_Prod_2yr,Gas_Prod_2yr,Cumulative.Oil.Production...Mstb.,Cumulative.Gas.Production...MMscf.,BOE_Cum_6mon
+     set.seed(107)
+     bayes.boe.prod.model <- train(as.formula(paste(input$rf_target_var,"~ .")),
+                                   data = model.data,
+                                   method = "bayesglm"  # now we're using the bayesian glm method
+     )
+     bayes.boe.prod.model
+   })
    
-   # output$density_error<-renderPlot({
-   #   req(input$password==my_password&input$go)
-   #   cluster.data2<-mutate(cluster.data,Cluster=factor(ClustData()$cluster))%>%filter(Cluster==input$clust_invest)
-   #   density.error<-ggplot(cluster.data2, aes(x=!!input$error_var)) + 
-   #     geom_density(alpha=.2,size=1) +
-   #     ggtitle(paste0(input$error_var," Density for Cluster ",input$clust_invest))+
-   #     theme(text = element_text(size=20))
-   #   density.error
-   # })
+   output$cl_bayes.boe.importance<-renderPlot({
+     bayes.var.imp<-varImp(cl_bayes.boe.model())
+     bayes.summary<-data.frame(var=rownames(bayes.var.imp$importance),
+                               rel.inf=bayes.var.imp$importance$Overall)%>%
+       arrange(rel.inf)
+     bayes.summary<-bayes.summary%>%
+       mutate(var=factor(bayes.summary$var, levels=bayes.summary$var))
+     
+     bayes_rel_inf_plot<-ggplot(data = bayes.summary,aes(x=var,y=rel.inf))+
+       geom_bar(stat="identity",color="black",fill="cornflowerblue")+
+       geom_text(aes(label=round(rel.inf,1)), hjust=1.5, color="white",
+                 position = position_dodge(0.9), size=3.5)+
+       theme_bw()+
+       xlab("Variable")+ylab("Relative Importance")+
+       ggtitle(paste0("Cluster ",input$clust_invest," Bayesian GLM Relative Importance Plot\n(Target: ",input$rf_target_var," )"))+
+       theme(text = element_text(size=17))+
+       coord_flip()
+     bayes_rel_inf_plot
+   })
    
-   # output$density_percent_error<-renderPlot({
-   #   req(input$password==my_password&input$go)
-   #   cluster.data2<-mutate(cluster.data,Cluster=factor(ClustData()$cluster))%>%filter(Cluster==input$clust_invest)%>%
-   #                  mutate(Abs.Percent.Error.1yr=abs(Percent.Error.1yr),
-   #                         Abs.Percent.Error.2yr=abs(Percent.Error.2yr),
-   #                         Abs.Percent.Error.3yr=abs(Percent.Error.3yr),
-   #                         Abs.Percent.Error.4yr=abs(Percent.Error.4yr),
-   #                         Abs.Percent.Error.5yr=abs(Percent.Error.5yr))
-   #   percent.within.10.1yr<-round(sum(cluster.data2$Abs.Percent.Error.1yr<=.1)/dim(cluster.data2)[[1]],3)*100
-   #   percent.within.20.1yr<-round(sum(cluster.data2$Abs.Percent.Error.1yr<=.2)/dim(cluster.data2)[[1]],3)*100
-   #   
-   #   percent.within.10.2yr<-round(sum(cluster.data2$Abs.Percent.Error.2yr<=.1)/dim(cluster.data2)[[1]],3)*100
-   #   percent.within.20.2yr<-round(sum(cluster.data2$Abs.Percent.Error.2yr<=.2)/dim(cluster.data2)[[1]],3)*100
-   #   
-   #   percent.within.10.3yr<-round(sum(cluster.data2$Abs.Percent.Error.3yr<=.1)/dim(cluster.data2)[[1]],3)*100
-   #   percent.within.20.3yr<-round(sum(cluster.data2$Abs.Percent.Error.3yr<=.2)/dim(cluster.data2)[[1]],3)*100
-   #   
-   #   percent.within.10.4yr<-round(sum(cluster.data2$Abs.Percent.Error.4yr<=.1)/dim(cluster.data2)[[1]],3)*100
-   #   percent.within.20.4yr<-round(sum(cluster.data2$Abs.Percent.Error.4yr<=.2)/dim(cluster.data2)[[1]],3)*100
-   #   
-   #   percent.within.10.5yr<-round(sum(cluster.data2$Abs.Percent.Error.5yr<=.1)/dim(cluster.data2)[[1]],3)*100
-   #   percent.within.20.5yr<-round(sum(cluster.data2$Abs.Percent.Error.5yr<=.2)/dim(cluster.data2)[[1]],3)*100
-   #   
-   #   if (input$error_var=="Total.Error.1yr"){
-   #      density.error<-ggplot(cluster.data2, aes(x=Percent.Error.1yr)) + 
-   #       geom_density(alpha=.2,size=1) +
-   #       ggtitle(paste0("Percent Error 1yr"," Density for Cluster ",input$clust_invest))+
-   #       theme(text = element_text(size=20))+
-   #       annotate("text",x=min(cluster.data2$Percent.Error.1yr),y=Inf,label=paste0(percent.within.10.1yr,"% of predictions are within 10% Error\n",percent.within.20.1yr,"% of predictions are within 20% Error"),hjust=0,vjust=1,size=6)
-   #   }else if (input$error_var=="Total.Error.2yr"){
-   #     density.error<-ggplot(cluster.data2, aes(x=Percent.Error.2yr)) + 
-   #       geom_density(alpha=.2,size=1) +
-   #       ggtitle(paste0("Percent Error 2yr"," Density for Cluster ",input$clust_invest))+
-   #       theme(text = element_text(size=20))+
-   #       annotate("text",x=min(cluster.data2$Percent.Error.2yr),y=Inf,label=paste0(percent.within.10.2yr,"% of predictions are within 10% Error\n",percent.within.20.2yr,"% of predictions are within 20% Error"),hjust=0,vjust=1,size=6)
-   #   }else if (input$error_var=="Total.Error.3yr"){
-   #     density.error<-ggplot(cluster.data2, aes(x=Percent.Error.3yr)) + 
-   #       geom_density(alpha=.2,size=1) +
-   #       ggtitle(paste0("Percent Error 3yr"," Density for Cluster ",input$clust_invest))+
-   #       theme(text = element_text(size=20))+
-   #       annotate("text",x=min(cluster.data2$Percent.Error.3yr),y=Inf,label=paste0(percent.within.10.3yr,"% of predictions are within 10% Error\n",percent.within.20.3yr,"% of predictions are within 20% Error"),hjust=0,vjust=1,size=6)
-   #   }else if (input$error_var=="Total.Error.4yr"){
-   #     density.error<-ggplot(cluster.data2, aes(x=Percent.Error.4yr)) + 
-   #       geom_density(alpha=.2,size=1) +
-   #       ggtitle(paste0("Percent Error 4yr"," Density for Cluster ",input$clust_invest))+
-   #       theme(text = element_text(size=20))+
-   #       annotate("text",x=min(cluster.data2$Percent.Error.4yr),y=Inf,label=paste0(percent.within.10.4yr,"% of predictions are within 10% Error\n",percent.within.20.4yr,"% of predictions are within 20% Error"),hjust=0,vjust=1,size=6)
-   #   }else if (input$error_var=="Total.Error.5yr"){
-   #     density.error<-ggplot(cluster.data2, aes(x=Percent.Error.5yr)) + 
-   #       geom_density(alpha=.2,size=1) +
-   #       ggtitle(paste0("Percent Error 5yr"," Density for Cluster ",input$clust_invest))+
-   #       theme(text = element_text(size=20))+
-   #       annotate("text",x=min(cluster.data2$Percent.Error.5yr),y=Inf,label=paste0(percent.within.10.5yr,"% of predictions are within 10% Error\n",percent.within.20.5yr,"% of predictions are within 20% Error"),hjust=0,vjust=1,size=6)
-   #   }
-   #   
-   #   density.error
-   # })
-   # 
-   # output$density_leading<-renderPlot({
-   #   req(input$password==my_password&input$go)
-   #   cluster.data2<-mutate(cluster.data,Cluster=factor(ClustData()$cluster))%>%filter(Cluster==input$clust_invest)
-   #   
-   #   breaks.num=max(round(dim(cluster.data2)[[1]]/20,0),10)
-   #   x<-hist(abs(cluster.data2$Leading.Coef),breaks.num)
-   #   obs.counts<-x$counts
-   #   best.fit.df<-data.frame(Type=character(),Mean=numeric(),SD=numeric(),Abs.Sum=numeric(),ith=numeric(),jth=numeric())
-   #   data.mean=abs(mean(cluster.data2$Leading.Coef))
-   #   data.sd=sd(cluster.data2$Leading.Coef)
-   #   data.lmean=mean(log(abs(cluster.data2$Leading.Coef)))
-   #   data.lsd=sd(log(abs(cluster.data2$Leading.Coef)))
-   #   
-   #   for (i in 0:20){
-   #     test.sd=(.8+.02*i)*(data.sd)
-   #     test.lsd=(.8+.02*i)*(data.lsd)
-   #     for (j in 0:20){
-   #       test.mean=data.mean-2*test.sd+j*test.sd/5
-   #       test.lmean=data.lmean-2*test.lsd+j*test.lsd/5
-   #       
-   #       ##check normal
-   #       y<-pnorm(x$breaks,mean=abs(test.mean),sd=test.sd)
-   #       exp.probs<-(y[2:length(y)]-y[1:(length(y)-1)])
-   #       chisq.norm.df<-data.frame(Obs.Counts=obs.counts,Exp.Counts=exp.probs*sum(obs.counts))%>%
-   #         mutate(Abs.Contribution=abs(Obs.Counts-Exp.Counts))
-   #       abs.diff.value.norm<-sum(chisq.norm.df$Abs.Contribution)
-   #       this.row<-data.frame(Type="Normal",Mean=test.mean,SD=test.sd,Abs.Sum=abs.diff.value.norm,ith=i,jth=j)
-   #       best.fit.df<-rbind(best.fit.df,this.row)
-   #       
-   #       #check log normal
-   #       y<-pnorm(x$breaks,mean=test.lmean,sd=test.lsd)
-   #       exp.probs<-(y[2:length(y)]-y[1:(length(y)-1)])
-   #       chisq.norm.df<-data.frame(Obs.Counts=obs.counts,Exp.Counts=exp.probs*sum(obs.counts))%>%
-   #         mutate(Abs.Contribution=abs(Obs.Counts-Exp.Counts))
-   #       abs.diff.value.norm<-sum(chisq.norm.df$Abs.Contribution)
-   #       this.row<-data.frame(Type="LogNormal",Mean=test.mean,SD=test.sd,Abs.Sum=abs.diff.value.norm,ith=i,jth=j)
-   #       best.fit.df<-rbind(best.fit.df,this.row)
-   #       
-   #       #check gamma
-   #       test.scale<-abs(test.sd^2/test.mean)
-   #       test.shape<-abs(test.mean^2/test.sd^2)
-   #       
-   #       y<-pgamma(x$breaks,scale=test.scale,shape=test.shape)
-   #       exp.probs<-(y[2:length(y)]-y[1:(length(y)-1)])
-   #       chisq.norm.df<-data.frame(Obs.Counts=obs.counts,Exp.Counts=exp.probs*sum(obs.counts))%>%
-   #         mutate(Abs.Contribution=abs(Obs.Counts-Exp.Counts))
-   #       abs.diff.value.norm<-sum(chisq.norm.df$Abs.Contribution)
-   #       this.row<-data.frame(Type="Gamma",Mean=test.mean,SD=test.sd,Abs.Sum=abs.diff.value.norm,ith=i,jth=j)
-   #       best.fit.df<-rbind(best.fit.df,this.row)
-   #       
-   #     }
-   #   }
-   #   best.curve<-filter(best.fit.df,Abs.Sum==min(best.fit.df$Abs.Sum))[1,]
-   #   best.scale<-abs(best.curve$SD^2/best.curve$Mean)
-   #   best.shape<-abs(best.curve$Mean^2/best.curve$SD^2)
-   #   
-   #   density.leading.coef<-ggplot(cluster.data2, aes(x=abs(Leading.Coef))) + 
-   #     geom_density(alpha=.2,size=1) +
-   #     switch(as.character(best.curve$Type),
-   #            Normal=ggtitle(paste0("Leading Coefficients approx. ", best.curve$Type ," with \nmean= ",round(best.curve$Mean,2)," and sd= ",round(best.curve$SD,2),", Count=",dim(cluster.data2)[[1]])),
-   #            LogNormal=ggtitle(paste0("Leading Coefficients approx. ", best.curve$Type ," with \nlmean= ",round(data.lmean-2*test.lsd+best.curve$jth*test.lsd/5,2)," and lsd= ",round((.8+.02*best.curve$ith)*(data.lsd),2),", Count=",dim(cluster.data2)[[1]])),
-   #            Gamma=ggtitle(paste0("Leading Coefficients approx. ", best.curve$Type ," with \nscale= ",round(best.scale,2)," and shape= ",round(best.shape,2),", Count=",dim(cluster.data2)[[1]])))+
-   #     theme(text = element_text(size=20))+
-   #     switch(as.character(best.curve$Type),
-   #            Normal=stat_function(fun = dnorm, n = 101, args = list(mean = best.curve$Mean, sd = best.curve$SD),color="blue",size=1),
-   #            LogNormal=stat_function(fun = dlnorm, n = 101, args = list(mean = data.lmean-2*test.lsd+best.curve$jth*test.lsd/5, sd = (.8+.02*best.curve$ith)*(data.lsd)),
-   #                                    color="blue",size=1),
-   #            Gamma=stat_function(fun = dgamma, n = 101, args = list(scale = best.scale, shape = best.shape), color="blue",size=1))
-   #   
-   #   density.leading.coef
-   # })
-   # 
-   # output$density.max.oil<-renderPlot({
-   #   req(input$password==my_password&input$go)
-   #   cluster.data2<-mutate(cluster.data,Cluster=factor(ClustData()$cluster))%>%filter(Cluster==input$clust_invest)
-   #   lmean<- mean(log(cluster.data2$Max.Output.Oil))
-   #   lsd<- sd(log(cluster.data2$Max.Output.Oil))
-   #   
-   #   breaks.num=max(round(dim(cluster.data2)[[1]]/20,0),10)
-   #   x<-hist(abs(cluster.data2$Max.Output.Oil),breaks.num)
-   #   obs.counts<-x$counts
-   #   best.fit.df<-data.frame(Type=character(),Mean=numeric(),SD=numeric(),Abs.Sum=numeric(),ith=numeric(),jth=numeric())
-   #   data.mean=abs(mean(cluster.data2$Max.Output.Oil))
-   #   data.sd=sd(cluster.data2$Max.Output.Oil)
-   #   data.lmean=mean(log(abs(cluster.data2$Max.Output.Oil)))
-   #   data.lsd=sd(log(abs(cluster.data2$Max.Output.Oil)))
-   #   
-   #   for (i in 0:20){
-   #     test.sd=(.8+.02*i)*(data.sd)
-   #     test.lsd=(.8+.02*i)*(data.lsd)
-   #     for (j in 0:20){
-   #       test.mean=data.mean-2*test.sd+j*test.sd/5
-   #       test.lmean=data.lmean-2*test.lsd+j*test.lsd/5
-   #       
-   #       ##check normal
-   #       y<-pnorm(x$breaks,mean=abs(test.mean),sd=test.sd)
-   #       exp.probs<-(y[2:length(y)]-y[1:(length(y)-1)])
-   #       chisq.norm.df<-data.frame(Obs.Counts=obs.counts,Exp.Counts=exp.probs*sum(obs.counts))%>%
-   #         mutate(Abs.Contribution=abs(Obs.Counts-Exp.Counts))
-   #       abs.diff.value.norm<-sum(chisq.norm.df$Abs.Contribution)
-   #       this.row<-data.frame(Type="Normal",Mean=test.mean,SD=test.sd,Abs.Sum=abs.diff.value.norm,ith=i,jth=j)
-   #       best.fit.df<-rbind(best.fit.df,this.row)
-   #       
-   #       #check log normal
-   #       y<-pnorm(x$breaks,mean=test.lmean,sd=test.lsd)
-   #       exp.probs<-(y[2:length(y)]-y[1:(length(y)-1)])
-   #       chisq.norm.df<-data.frame(Obs.Counts=obs.counts,Exp.Counts=exp.probs*sum(obs.counts))%>%
-   #         mutate(Abs.Contribution=abs(Obs.Counts-Exp.Counts))
-   #       abs.diff.value.norm<-sum(chisq.norm.df$Abs.Contribution)
-   #       this.row<-data.frame(Type="LogNormal",Mean=test.mean,SD=test.sd,Abs.Sum=abs.diff.value.norm,ith=i,jth=j)
-   #       best.fit.df<-rbind(best.fit.df,this.row)
-   #       
-   #       #check gamma
-   #       test.scale<-abs(test.sd^2/test.mean)
-   #       test.shape<-abs(test.mean^2/test.sd^2)
-   #       
-   #       y<-pgamma(x$breaks,scale=test.scale,shape=test.shape)
-   #       exp.probs<-(y[2:length(y)]-y[1:(length(y)-1)])
-   #       chisq.norm.df<-data.frame(Obs.Counts=obs.counts,Exp.Counts=exp.probs*sum(obs.counts))%>%
-   #         mutate(Abs.Contribution=abs(Obs.Counts-Exp.Counts))
-   #       abs.diff.value.norm<-sum(chisq.norm.df$Abs.Contribution)
-   #       this.row<-data.frame(Type="Gamma",Mean=test.mean,SD=test.sd,Abs.Sum=abs.diff.value.norm,ith=i,jth=j)
-   #       best.fit.df<-rbind(best.fit.df,this.row)
-   #       
-   #     }
-   #   }
-   #   best.curve<-filter(best.fit.df,Abs.Sum==min(best.fit.df$Abs.Sum))[1,]
-   #   best.scale<-abs(best.curve$SD^2/best.curve$Mean)
-   #   best.shape<-abs(best.curve$Mean^2/best.curve$SD^2)
-   #   
-   #   density.max.oil<-ggplot(cluster.data2, aes(x=Max.Output.Oil)) + 
-   #     geom_density(alpha=.2,size=1) +
-   #     switch(as.character(best.curve$Type),
-   #            Normal=ggtitle(paste0("Max Oil approx. ", best.curve$Type ," with \nmean= ",round(best.curve$Mean,2)," and sd= ",round(best.curve$SD,2),", Count=",dim(cluster.data2)[[1]])),
-   #            LogNormal=ggtitle(paste0("Max Oil approx. ", best.curve$Type ," with \nlmean= ",round(data.lmean-2*test.lsd+best.curve$jth*test.lsd/5,2)," and lsd= ",round((.8+.02*best.curve$ith)*(data.lsd),2),", Count=",dim(cluster.data2)[[1]])),
-   #            Gamma=ggtitle(paste0("Max Oil approx. ", best.curve$Type ," with \nscale= ",round(best.scale,2)," and shape= ",round(best.shape,2),", Count=",dim(cluster.data2)[[1]])))+
-   #     theme(text = element_text(size=20))+
-   #     switch(as.character(best.curve$Type),
-   #            Normal=stat_function(fun = dnorm, n = 101, args = list(mean = best.curve$Mean, sd = best.curve$SD),color="blue",size=1),
-   #            LogNormal=stat_function(fun = dlnorm, n = 101, args = list(mean = data.lmean-2*test.lsd+best.curve$jth*test.lsd/5, sd = (.8+.02*best.curve$ith)*(data.lsd)),
-   #                                    color="blue",size=1),
-   #            Gamma=stat_function(fun = dgamma, n = 101, args = list(scale = best.scale, shape = best.shape), color="blue",size=1))
-   #     
-   #   density.max.oil
-   # })
+   cl_gbm.boe.model<-reactive({
+     req(input$password==my_password&input$go)
+     cluster.data2<-mutate(rf.prod.data,Cluster=factor(ClustData()$cluster))
+     
+     if(input$clust_toggle){
+       cluster.data2<-import_krig_clust()
+     }
+     
+     model.data<-cluster.data2%>%dplyr::select(!!!input$rf_target_var,Cluster,!!!input$rf_var)%>%
+       filter(Cluster==input$clust_invest)%>%
+       select(-Cluster)
+     model.data<-na.omit(model.data)
+     
+     #BOE_Prod_2yr,Oil_Prod_2yr,Gas_Prod_2yr,Cumulative.Oil.Production...Mstb.,Cumulative.Gas.Production...MMscf.,BOE_Cum_6mon
+     set.seed(107)
+     gbm.boe.prod.model <- gbm(as.formula(paste(input$rf_target_var,"~ .")),
+                                   data = model.data, n.trees = input$cl_tree_num)
+     
+     gbm.boe.prod.model
+   })
    
+   output$cl_gbm.boe.importance<-renderPlot({
+     gbm.var.imp<-summary.gbm(cl_gbm.boe.model())
+     gbm.summary<-data.frame(var=gbm.var.imp$var,
+                               rel.inf=gbm.var.imp$rel.inf)%>%
+       arrange(rel.inf)
+     gbm.summary<-gbm.summary%>%
+       mutate(var=factor(gbm.summary$var, levels=gbm.summary$var))
+     
+     gbm_rel_inf_plot<-ggplot(data = gbm.summary,aes(x=var,y=rel.inf))+
+       geom_bar(stat="identity",color="black",fill="cornflowerblue")+
+       geom_text(aes(label=round(rel.inf,1)), hjust=1.5, color="white",
+                 position = position_dodge(0.9), size=3.5)+
+       theme_bw()+
+       xlab("Variable")+ylab("Relative Importance")+
+       ggtitle(paste0("Cluster ",input$clust_invest," Gradient Boosting Relative Importance Plot\n(Target: ",input$rf_target_var," )"))+
+       theme(text = element_text(size=17))+
+       coord_flip()
+     gbm_rel_inf_plot
+   })
+   
+##Rev/Cost tab
    rev.cost.joined.data<-reactive({
      req(input$password==my_password&input$go)
      rev.cost.joined.data<-joined.data.price%>%left_join(select(ClustData3(),API,Cluster))%>%
@@ -1270,7 +1033,7 @@ server <- function(input, output, session) {
      profit.plot
    })
    
-   ##PL tab
+##PL tab
    pl.data.table<-reactive({
       req(input$password==my_password&input$go&input$pl_toggle)
       set.seed(606)
@@ -1315,7 +1078,6 @@ server <- function(input, output, session) {
    
    output$PL_density<-renderPlot({
       req(input$password==my_password&input$go&input$pl_toggle)
-      #cluster.data2<-mutate(cluster.data,Cluster=factor(ClustData()$cluster))%>%filter(Cluster==input$clust_invest)
       pl.density.data<-pl.data.table()$coef.data%>%
                filter(Month_try>=input$pl_min_month_density,Month_try<=input$pl_max_month_density)
       density.pl<-ggplot(pl.density.data, aes(x=!!input$pl_density_var)) + 
@@ -1605,7 +1367,7 @@ server <- function(input, output, session) {
 
       BOE.model<-lm(ln.BOE~ln.Month,data=model.data)
       
-      # ##hyperbolic decline curve
+      ##hyperbolic decline curve
       peak.prod<-max(model.data$BOE)
       q_i<-filter(model.data,BOE==peak.prod)$BOE[[1]]
 
@@ -1793,7 +1555,7 @@ server <- function(input, output, session) {
      
      BOE.model<-lm(ln.BOE~ln.Month,data=model.data)
      
-     # ##hyperbolic decline curve
+     ##hyperbolic decline curve
      peak.prod<-max(model.data$BOE)
      q_i<-filter(model.data,BOE==peak.prod)$BOE[[1]]
      
@@ -1869,7 +1631,7 @@ server <- function(input, output, session) {
      PL.gas.clust.error
    })
    
-   ## RF Production Pred tab
+## ML Production Pred tab
    
    rf.prod.data2<-reactive({
      req(input$password==my_password&input$go)
@@ -2021,20 +1783,28 @@ server <- function(input, output, session) {
    ##Begin work on Random Forest Training on individual Clusters
    rf.prod.data3<-reactive({ ##Using rf.prod.data3 as a sample, replace with rf.prod.data2 for actual implementation
      #set.seed(3)
-     rf.prod.data3<-rf.prod.data2() ##%>% slice_sample(n=500)
+     rf.prod.data3<-rf.prod.data2()
      rf.prod.data3
    }) 
    
    RF_ClustScale<-reactive({
      req(input$password==my_password&input$go)
+     
+     rf.prod.data4<-rf.prod.data3()
+     if(input$clust_toggle){ ##imports Clusters from Kriging TL tab if that toggle is selected on Kriging TL tab
+       rf.prod.data4<-import_krig_clust()
+     }
+     
       if (input$pca_clust_toggle){
-         cluster.prcomp<-prcomp(rf.prod.data3()  %>% dplyr::select(!!!input$rf_clust_var))
+         cluster.prcomp<-prcomp(rf.prod.data4  %>% dplyr::select(!!!input$rf_clust_var))
          cluster.scale<-cluster.prcomp$x
       }
       else {
-         cluster.scale<-data.frame(scale(rf.prod.data3()  %>% dplyr::select(!!!input$rf_clust_var)))
+         cluster.scale<-data.frame(scale(rf.prod.data4  %>% dplyr::select(!!!input$rf_clust_var)))
       }
      cluster.scale
+     ##need to modify this too from kringing
+
    })
    
    output$RF_Clust_silhoutte<-renderPlot({
@@ -2056,15 +1826,28 @@ server <- function(input, output, session) {
      error.results<-data.frame(Cluster_Number=numeric(),Train_ID=numeric(),Test_ID=numeric(),
                          Train_Error=numeric(),Test_Error=numeric())
      
-     for (clust_num in input$TL_min:input$TL_max){
+     start_loop<-input$TL_min
+     end_loop<-input$TL_max
+     clust_flag<-input$rf_clust_num
+     if(input$clust_toggle){
+       start_loop<-input$krig_clust_num
+       end_loop<-input$krig_clust_num
+       clust_flag<-input$krig_clust_num
+     }
+     
+     for (clust_num in start_loop:end_loop){
        set.seed(465)
        clust_model<-kmeans(RF_ClustScale(), centers = clust_num)
        
-       if (clust_num==input$rf_clust_num){
+       if (clust_num==clust_flag){
          my_cluster_scale<-clust_model
        }
        
        cluster.data2<-mutate(rf.prod.data3(),Cluster=factor(clust_model$cluster))
+       ##consider importing clusters from Kriging tab here
+       if(input$clust_toggle){ ##imports Clusters from Kriging TL tab if that toggle is selected on Kriging TL tab
+         cluster.data2<-import_krig_clust()
+       }
        
        for (train_id in 1:clust_num){
          train<-cluster.data2%>%filter(Cluster==train_id)%>%select(Cluster,BOE_Prod_2yr,!!!input$rf_prod_var)
@@ -2076,7 +1859,7 @@ server <- function(input, output, session) {
          bayes.prod.model <- train(BOE_Prod_2yr ~ ., data = select(train,-Cluster),
                                        method = "bayesglm")
          
-         if (clust_num==input$rf_clust_num & train_id==input$rf_train_clust){
+         if (clust_num==clust_flag & train_id==input$rf_train_clust){
            display.rf.prod.model<-rf.prod.model
            display.bayes.prod.model<-bayes.prod.model
          }
@@ -2089,7 +1872,7 @@ server <- function(input, output, session) {
                                   Bayes_Percent_Error=100*Bayes_Abs_Error/BOE_Prod_2yr)
          
          bayes.var.imp<-varImp(bayes.prod.model)$importance
-         if (train_id==1 & clust_num==input$TL_min){
+         if (train_id==1 & clust_num==start_loop){
             var.imp.results<-data.frame(RF_Var_Names=row.names(rf.prod.model$importance),Value1=as.integer(length(rf.prod.model$importance)+1-rank(rf.prod.model$importance)))
             var.imp.bayes.results<-data.frame(Bayes_Var_Names=row.names(bayes.var.imp),Value1=as.integer(dim(bayes.var.imp)[[1]]+1-rank(bayes.var.imp)))
             i.count<-1
@@ -2110,7 +1893,7 @@ server <- function(input, output, session) {
            
            df.test<-test%>%mutate(RF_BOE_Pred=pred.test,Abs_Error=abs(RF_BOE_Pred-BOE_Prod_2yr),
                                   Percent_Error=100*Abs_Error/BOE_Prod_2yr)
-           if(clust_num==input$rf_clust_num & train_id==input$rf_train_clust &test_id==input$rf_test_clust){
+           if(clust_num==clust_flag & train_id==input$rf_train_clust &test_id==input$rf_test_clust){
              ##Store the results needed on dashboard
              train.result<-df.train
              test.result<-df.test
@@ -2161,12 +1944,21 @@ server <- function(input, output, session) {
       RF_Clust_TL()$Bayes_Var_Imp
    })
    
-   output$downloadTL_Var_Imp<-downloadHandler(
+   output$downloadTL_RF_Var_Imp<-downloadHandler(
      filename = function() {
-       paste0(" Transfer Learning Clusters ", input$TL_min, " to ",input$TL_max, "Var Importance.csv")
+       paste0(" Transfer Learning Clusters ", input$TL_min, " to ",input$TL_max, " RF Var Importance.csv")
      },
      content=function(file) {
-       write.table(RF_Clust_TL()$Var_Imp,file,row.names = FALSE)
+       write.table(RF_Clust_TL()$RF_Var_Imp,file,row.names = FALSE)
+     }
+   )
+   
+   output$downloadTL_Bayes_Var_Imp<-downloadHandler(
+     filename = function() {
+       paste0(" Transfer Learning Clusters ", input$TL_min, " to ",input$TL_max, " Bayes Var Importance.csv")
+     },
+     content=function(file) {
+       write.table(RF_Clust_TL()$Bayes_Var_Imp,file,row.names = FALSE)
      }
    )
    
@@ -2174,12 +1966,19 @@ server <- function(input, output, session) {
      req(input$password==my_password&input$go&input$rf_toggle2)
      fviz_plot<-fviz_cluster(RF_Clust_TL()$RF_ClustData,data = rf.prod.data3()  %>% dplyr::select(!!!input$rf_clust_var)) +
        ggtitle(paste0("PCA Cluster Plot \nVariables: ",paste(sapply(input$rf_clust_var,paste),collapse = " ")))+theme(text = element_text(size=20))
+     if(input$clust_toggle){
+       fviz_plot<-fviz_cluster(krig_clust_model(),data = filter(krig_scale_clust_data(),Type=="EagleFord")%>%select(-Type))+
+         ggtitle(paste0("PCA Cluster Plot from Kriging TL \nVariables: ",paste(sapply(input$krig_clust_vars,paste),collapse = " ")))+theme(text = element_text(size=20))
+     }
      fviz_plot
    })
    
    RF_ClustData2<-reactive({
      req(input$password==my_password&input$go&input$rf_toggle2)
      cluster.data2<-mutate(rf.prod.data3(),Cluster=factor(RF_Clust_TL()$RF_ClustData$cluster))
+     if(input$clust_toggle){ ##imports Clusters from Kriging TL tab if that toggle is selected on Kriging TL tab
+       cluster.data2<-import_krig_clust()
+     }
      cluster.data2
    })
    
@@ -2258,7 +2057,11 @@ server <- function(input, output, session) {
    
    output$rf.clust.boe.prod.error<-renderTable({
      req(input$password==my_password&input$go)
-     df.error<-RF_Clust_TL()$Results%>%filter(Train_ID==input$rf_train_clust,Test_ID==input$rf_test_clust,Cluster_Number==input$rf_clust_num)
+     clust_flag<-input$rf_clust_num
+     if(input$clust_toggle){
+       clust_flag<-input$krig_clust_num
+     }
+     df.error<-RF_Clust_TL()$Results%>%filter(Train_ID==input$rf_train_clust,Test_ID==input$rf_test_clust,Cluster_Number==clust_flag)
      df.error
    })
    
@@ -2524,6 +2327,7 @@ server <- function(input, output, session) {
       tl_error_table
    })
    
+##Kriging TL tab
    ##Kriging calcs and outputs
    output$krig_head_name<-renderText({
       req(input$password==my_password&input$go&input$krig_rf_toggle)
@@ -2549,11 +2353,6 @@ server <- function(input, output, session) {
          write.csv(krig.sample.data,file,row.names=FALSE)
       }
    )
-   
-   # set.seed(45)
-   # krig_samp<-select(rf.prod.data,Surf.Lat,Surf.Lon,TOC:TVD,API.Gravity,Lateral..ft.,GPI,Proppant.per.GPI..lb.ft.,Fluid.per.GPI..gal.ft.)%>%
-   #    slice_sample(n=100)
-   # write.csv(krig_samp,file = "Kriging Sample File.csv",row.names = FALSE)
       
    krig_train_data<-reactive({
       req(input$password==my_password&input$go&input$krig_rf_toggle)
@@ -2567,11 +2366,6 @@ server <- function(input, output, session) {
                 API.Gravity.scale=scale(API.Gravity)[,1])
       krig_train_df
    })
-   
-   # output$krig_train_data_display<-renderTable({
-   #    this.df<-krig_train_data()
-   #    head(this.df,10)
-   # })
    
    coord_table<-reactive({
       req(input$password==my_password&input$go&input$krig_rf_toggle)
@@ -2615,8 +2409,6 @@ server <- function(input, output, session) {
          #consider guassian for TVD, Brittleness
          geo.vgm <- variogram(as.formula(paste(geo.list[i],"~ 1")), krig_train_data2) # calculates sample variogram values 
          geo.fit <- fit.variogram(geo.vgm, model=vgm(model="Sph")) # fit model,Bes,Sph and Cir, Pen work well
-         
-         #print(plot(geo.vgm, geo.fit,main=paste0(geo.list[i]," Variogram")))
          
          geo.kriged <- krige(as.formula(paste(geo.list[i],"~ 1")), krig_train_data2, grid.pred, model=geo.fit)
          geo.kriged2 <- as.data.frame(geo.kriged)
@@ -2678,15 +2470,6 @@ server <- function(input, output, session) {
       numericInput("krig_Lon_UR","Kriging Lon Upper Right",round(max(krig_data_upload()$Surf.Lon),2))
    })
    
-   # output$choose_krig_display <- renderUI({
-   #    # If missing input, return to avoid error later in function
-   #    if(is.null(krig_model_pred()))
-   #       return()
-   # 
-   #    varSelectInput("krig_display_var2", "Kriging Display Variable2:", data=select(krig_model_pred(),TOC.pred:TVD.pred), multiple = FALSE)
-   # 
-   # })
-   
    output$krig_data_map<-renderPlot({
       req(input$password==my_password&input$go&input$krig_rf_toggle)
       ##c(LL.Lon,LL.Lat,UR.Lon,UR.Lat)
@@ -2710,7 +2493,6 @@ server <- function(input, output, session) {
       map_data<-krig_model_pred()%>%select(lngcoords,latcoords,starts_with(input$krig_display_var),max.prob,min.prob)%>%
                      filter(min.prob>input$cert_num)
 
-      #map_data<-krig_model_pred()%>%filter(max.prob>input$cert_num) #min.prob>input$cert_num
       kriged.map<- gg_train+geom_point(data=map_data, aes_string(x="lngcoords",  y="latcoords",color=paste0(input$krig_display_var,".pred")),size=1.5)+
          ggtitle(paste0("Kriged Data for ",input$krig_display_var," Map"))+
          scale_color_gradientn(colours = topo.colors(5))+
@@ -2881,11 +2663,6 @@ server <- function(input, output, session) {
                                                   API.Gravity=API.Gravity.pred
       )
       
-      # coord.table<-coord_table()
-      # user.pred.cutoff<-krig_rf_pred()%>%filter(min.prob>input$cert_num)%>%
-      #    select(lngcoords,latcoords,RF_BOE_Pred,!!!input$krig_rf_vars)%>%
-      #    mutate(Number_Wells=coord.table$Wells_Per_Grid, Area_BOE=RF_BOE_Pred*Number_Wells)
-      
       rf_sensitivity<-data.frame(Surf.Lat=numeric(),Surf.Lon=numeric(),Train_Clust=numeric(),Pred_BOE=numeric(),min.prob=numeric())
       
       for (this_clust in 1:input$krig_clust_num){
@@ -2921,11 +2698,6 @@ server <- function(input, output, session) {
          
       sense_summary
    })
-   
-   # output$krig_rf_sense<-renderTable({
-   #    req(input$password==my_password&input$go&input$krig_rf_toggle)
-   #    head(krig_rf_sensitivity())
-   # })
    
    output$krig_field_summary_name<-renderText({
       req(input$password==my_password&input$go&input$krig_rf_toggle)
@@ -2998,7 +2770,6 @@ server <- function(input, output, session) {
                            select(lngcoords,latcoords,RF_BOE_Pred,!!!input$krig_rf_vars)%>%
                            arrange(desc(RF_BOE_Pred))%>%
                            mutate(Number_Wells=coord.table$Wells_Per_Grid, Area_BOE=RF_BOE_Pred*Number_Wells)
-      #head(krig_rf_data())
       head(display.data,10)
    })
    
@@ -3038,15 +2809,376 @@ server <- function(input, output, session) {
          scale_color_discrete()+ #scale_color_gradientn(colours = topo.colors(5))+
          theme(text = element_text(size=20))
       
-      # boe.map<- gg_train+geom_point(data=krig_map_data, aes_string(x="lngcoords",  y="latcoords",color="RF_BOE_Pred"),size=1.5)+
-      #    ggtitle(paste0("BOE Predictions from RF Model \nwith Kriged Inputs Map"))+
-      #    scale_color_gradientn(colours = topo.colors(5), 
-      #                          breaks=c(round(quantile(bins_data$BOE,0)[[1]],-4),round(quantile(bins_data$BOE,.2)[[1]],-4),round(quantile(bins_data$BOE,.4)[[1]],-4),round(quantile(bins_data$BOE,.6),-4),round(quantile(bins_data$BOE,.8)[[1]],-4),round(quantile(bins_data$BOE,1)[[1]],-4),))+
-      #    theme(text = element_text(size=20))
-      
       boe.map
    })
    
+   ##Ensemble Learning
+   
+   cut_props<-reactive({
+     cut_props<-data.frame(low.cut=seq(input$el_start,input$el_end,input$el_step))%>%mutate(high.cut=1-low.cut)
+   })
+   
+   filter_var_df<-reactive({
+     req(input$password==my_password&input$go&input$EL_toggle)
+     
+     cut_props<-cut_props()
+
+     filter_df<-rf.prod.data%>%select(API,!!!input$el_filter_var1,!!!input$el_filter_var2,!!!input$el_filter_var3)
+     filter_df1<-rf.prod.data%>%select(!!!input$el_filter_var1)
+     filter_df2<-rf.prod.data%>%select(!!!input$el_filter_var2)
+     filter_df3<-rf.prod.data%>%select(!!!input$el_filter_var3)
+    
+    overlap_data1<-rf.prod.data%>%filter((!!!input$el_filter_var1)<=quantile(filter_df1[,1],cut_props$low.cut[1]),
+                                         (!!!input$el_filter_var1)>=quantile(filter_df1[,1],cut_props$high.cut[1]),
+                                         (!!!input$el_filter_var2)<=quantile(filter_df2[,1],cut_props$low.cut[1]),
+                                         (!!!input$el_filter_var2)>=quantile(filter_df2[,1],cut_props$high.cut[1]),
+                                         (!!!input$el_filter_var3)<=quantile(filter_df3[,1],cut_props$low.cut[1]),
+                                         (!!!input$el_filter_var3)>=quantile(filter_df3[,1],cut_props$high.cut[1]))
+    
+    overlap_low_df1<-overlap_data1%>%slice_sample(prop = 0.7)
+    overlap_high_df1<-overlap_data1%>%anti_join(overlap_low_df1,by=c("API"="API"))
+    
+    low_df1<-rf.prod.data%>%anti_join(overlap_data1,by=c("API"="API"))%>%
+      filter((!!!input$el_filter_var1)<quantile(filter_df1[,1],min(cut_props$low.cut[1],cut_props$high.cut[1])),
+             (!!!input$el_filter_var2)<quantile(filter_df2[,1],min(cut_props$low.cut[1],cut_props$high.cut[1])),
+             (!!!input$el_filter_var3)<quantile(filter_df3[,1],min(cut_props$low.cut[1],cut_props$high.cut[1])))%>%
+      rbind(overlap_low_df1)%>%
+      select(API,BOE_Prod_2yr,!!!input$el_formula_var)
+    
+    high_df1<-rf.prod.data%>%anti_join(overlap_data1,by=c("API"="API"))%>%
+      filter((!!!input$el_filter_var1)>quantile(filter_df1[,1],max(cut_props$low.cut[1],cut_props$high.cut[1])),
+             (!!!input$el_filter_var2)>quantile(filter_df2[,1],max(cut_props$low.cut[1],cut_props$high.cut[1])),
+             (!!!input$el_filter_var3)>quantile(filter_df3[,1],max(cut_props$low.cut[1],cut_props$high.cut[1])))%>%
+      rbind(overlap_high_df1)%>%
+      select(API,BOE_Prod_2yr,!!!input$el_formula_var)
+    
+    list(low_df=(low_df1),high_df=(high_df1))
+     })
+   
+   
+   
+   output$EL_low_text<-renderText({
+     req(input$password==my_password&input$go&input$EL_toggle)
+     paste0("Head of Low (Train) Data for Start Cut")
+   })
+   output$EL_Low_df<-renderTable({
+     req(input$password==my_password&input$go&input$EL_toggle)
+     head(filter_var_df()$low_df)
+   })
+   
+   output$EL_high_text<-renderText({
+     req(input$password==my_password&input$go&input$EL_toggle)
+     paste0("Head of High (Test) Data for Start Cut")
+   })
+   output$EL_High_df<-renderTable({
+     req(input$password==my_password&input$go&input$EL_toggle)
+     head(filter_var_df()$high_df)
+   })
+   
+   output$EL_table_text<-renderText({
+     req(input$password==my_password&input$go&input$EL_toggle)
+     paste0("Ensemble Learning Results")
+   })
+   
+   output$EL_Stress_Test_text<-renderText({
+     req(input$password==my_password&input$go&input$EL_toggle_st)
+     paste0("All Weights Errors in Specified Cut")
+   })
+   
+   EL_Strees_Test<-reactive({
+     req(input$password==my_password&input$go&input$EL_toggle_st)
+     
+     filter_df<-rf.prod.data%>%select(API,!!!input$el_filter_var1,!!!input$el_filter_var2,!!!input$el_filter_var3)
+     filter_df1<-rf.prod.data%>%select(!!!input$el_filter_var1)
+     filter_df2<-rf.prod.data%>%select(!!!input$el_filter_var2)
+     filter_df3<-rf.prod.data%>%select(!!!input$el_filter_var3)
+     
+     overlap_data1<-rf.prod.data%>%filter((!!!input$el_filter_var1)<=quantile(filter_df1[,1],input$el_low),
+                                          (!!!input$el_filter_var1)>=quantile(filter_df1[,1],input$el_high),
+                                          (!!!input$el_filter_var2)<=quantile(filter_df2[,1],input$el_low),
+                                          (!!!input$el_filter_var2)>=quantile(filter_df2[,1],input$el_high),
+                                          (!!!input$el_filter_var3)<=quantile(filter_df3[,1],input$el_low),
+                                          (!!!input$el_filter_var3)>=quantile(filter_df3[,1],input$el_high))
+     
+     overlap_low_df1<-overlap_data1%>%slice_sample(prop = input$el_train_prop)
+     overlap_high_df1<-overlap_data1%>%anti_join(overlap_low_df1,by=c("API"="API"))
+     
+     low_df1<-rf.prod.data%>%anti_join(overlap_data1,by=c("API"="API"))%>%
+       filter((!!!input$el_filter_var1)<quantile(filter_df1[,1],min(input$el_low,input$el_high)),
+              (!!!input$el_filter_var2)<quantile(filter_df2[,1],min(input$el_low,input$el_high)),
+              (!!!input$el_filter_var3)<quantile(filter_df3[,1],min(input$el_low,input$el_high)))%>%
+       rbind(overlap_low_df1)%>%
+       select(!!!input$el_target_stress,!!!input$el_formula_var) ##Remove BOE 2yr
+     
+     high_df1<-rf.prod.data%>%anti_join(overlap_data1,by=c("API"="API"))%>%
+       filter((!!!input$el_filter_var1)>quantile(filter_df1[,1],max(input$el_low,input$el_high)),
+              (!!!input$el_filter_var2)>quantile(filter_df2[,1],max(input$el_low,input$el_high)),
+              (!!!input$el_filter_var3)>quantile(filter_df3[,1],max(input$el_low,input$el_high)))%>%
+       rbind(overlap_high_df1)%>%
+       select(!!!input$el_target_stress,!!!input$el_formula_var) ##Remove BOE 2yr
+     
+     ##Data formatting for Ridge Regression
+     low_ridge_df1_y<-select(low_df1,!!!input$el_target_stress)[,1]
+     low_ridge_df1_x<-data.matrix(low_df1%>%select(-(!!!input$el_target_stress)))
+     
+     high_ridge_df1_y<-select(high_df1,!!!input$el_target_stress)[,1]
+     high_ridge_df1_x<-data.matrix(high_df1%>%select(-(!!!input$el_target_stress)))
+
+     
+     ##Random Forest
+     rf_model1<-randomForest(as.formula(paste(input$el_target_stress,"~ .")),data = low_df1, ntree=input$el_num_tree)
+     train.error.rf1<-rmse(select(low_df1,!!!input$el_target_stress)[,1],predict(rf_model1))
+     test.error.rf1<-rmse(select(high_df1,!!!input$el_target_stress)[,1],predict(rf_model1,newdata = high_df1))
+     
+     ##Gradient Boosting
+     gb_model1<-gbm(as.formula(paste(input$el_target_stress,"~ .")),data = low_df1, n.trees = input$el_num_tree)
+     train.error.gb1<-rmse(select(low_df1,!!!input$el_target_stress)[,1],predict(gb_model1))
+     test.error.gb1<-rmse(select(high_df1,!!!input$el_target_stress)[,1],predict(gb_model1,newdata = high_df1))
+     
+     ##Ridge Regression
+     cv_ridge_model1 <- cv.glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 0)
+     ridge_model1_best_lambda <- cv_ridge_model1$lambda.min
+     ridge_best_model1 <- glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 0, lambda = ridge_model1_best_lambda)
+     train.error.ridge1<-rmse(low_ridge_df1_y,predict(ridge_best_model1, s = ridge_model1_best_lambda, newx = low_ridge_df1_x))
+     test.error.ridge1<-rmse(high_ridge_df1_y,predict(ridge_best_model1, s = ridge_model1_best_lambda, newx = high_ridge_df1_x))
+     
+     ##Lasso Regression
+     cv_lasso_model1 <- cv.glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 1)
+     lasso_model1_best_lambda <- cv_lasso_model1$lambda.min
+     lasso_best_model1 <- glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 1, lambda = lasso_model1_best_lambda)
+     train.error.lasso1<-rmse(low_ridge_df1_y,predict(lasso_best_model1, s = lasso_model1_best_lambda, newx = low_ridge_df1_x))
+     test.error.lasso1<-rmse(high_ridge_df1_y,predict(lasso_best_model1, s = lasso_model1_best_lambda, newx = high_ridge_df1_x))
+     
+     ##create Output
+     output1<-data.frame(Model_Name=c("RF Percentile","GB Percentile","Ridge Percentile","Lasso Percentile"),
+                         Train_Error=c(train.error.rf1,train.error.gb1,train.error.ridge1,train.error.lasso1),
+                         Test_Error=c(test.error.rf1,test.error.gb1,test.error.ridge1,test.error.lasso1))
+     
+     output_train<-data.frame(Actual_BOE=low_ridge_df1_y, 
+                              RF_Pred=predict(rf_model1),
+                              GB_Pred=predict(gb_model1),
+                              X1=predict(ridge_best_model1, s = ridge_model1_best_lambda, newx = low_ridge_df1_x)[,1],
+                              X1.1=predict(lasso_best_model1, s = lasso_model1_best_lambda, newx = low_ridge_df1_x)[,1])%>%
+       mutate(Ridge_Pred=X1,Lasso_Pred=X1.1)%>%
+       select(-(X1:X1.1))
+     
+     output_test<-data.frame(Actual_BOE=high_ridge_df1_y,
+                             RF_Pred=predict(rf_model1,newdata = high_df1),
+                             GB_Pred=predict(gb_model1,newdata = high_df1),
+                             X1=predict(ridge_best_model1, s = ridge_model1_best_lambda, newx = high_ridge_df1_x)[,1],
+                             X1.1=predict(lasso_best_model1, s = lasso_model1_best_lambda, newx = high_ridge_df1_x)[,1])%>%
+       mutate(Ridge_Pred=X1,Lasso_Pred=X1.1)%>%
+       select(-(X1:X1.1))
+     
+     ##create weightings for different aggregate models
+     weights.df<-expand.grid(RF_wt=seq(0,1,input$el_weight_step),
+                             GB_wt=seq(0,1,input$el_weight_step),
+                             Ridge_wt=seq(0,1,input$el_weight_step),
+                             Lasso_wt=seq(0,1,input$el_weight_step))%>%
+       mutate(Total_Weight=RF_wt+GB_wt+Ridge_wt+Lasso_wt)%>%
+       filter(Total_Weight==1)%>%select(-Total_Weight)
+     weights.df<-weights.df%>%mutate(ID=seq(1,dim(weights.df)[[1]]))
+     
+     ##Loop through different weights for training errors
+     output_train_errors<-data.frame(ID=numeric(),Train_Error=numeric())
+     for (j in 1:dim(weights.df)[[1]]){
+       temp_df<-output_train%>%
+         mutate(Weighted_Pred=weights.df$RF_wt[j]*RF_Pred+weights.df$GB_wt[j]*GB_Pred+weights.df$Ridge_wt[j]*Ridge_Pred+weights.df$Lasso_wt[j]*Lasso_Pred)
+       this_result<-data.frame(ID=j,Train_Error=rmse(output_train$Actual_BOE,temp_df$Weighted_Pred))
+       output_train_errors<-rbind(output_train_errors,this_result)
+     }
+     output_train_errors<-output_train_errors%>%left_join(weights.df)%>%
+       arrange(Train_Error)
+     ##Loop through different weights for testing errors
+     output_test_errors<-data.frame(ID=numeric(),Test_Error=numeric())
+     for (k in 1:dim(weights.df)[[1]]){
+       temp_df<-output_test%>%
+         mutate(Weighted_Pred=weights.df$RF_wt[k]*RF_Pred+weights.df$GB_wt[k]*GB_Pred+weights.df$Ridge_wt[k]*Ridge_Pred+weights.df$Lasso_wt[k]*Lasso_Pred)
+       this_result<-data.frame(ID=k,Test_Error=rmse(output_test$Actual_BOE,temp_df$Weighted_Pred))
+       output_test_errors<-rbind(output_test_errors,this_result)
+       
+     }
+     output_test_errors<-output_test_errors%>%left_join(weights.df)%>%
+       arrange(Test_Error)
+     
+     #Create Output file with Train and Test Models based on Weightings
+     output_errors1<-output_test_errors%>%left_join(select(output_train_errors,ID,Train_Error))%>%
+       mutate(Well_Count_Train=dim(low_df1)[1],Well_Count_Test=dim(high_df1)[1],
+              Total_Target_Output_Train=sum(low_ridge_df1_y),Total_Target_Output_Test=sum(high_ridge_df1_y),
+              Avg_Target_Output_Train=Total_Target_Output_Train/Well_Count_Train,Avg_Target_Output_Test=Total_Target_Output_Test/Well_Count_Test,
+              Percent_Error_Train=Train_Error/Avg_Target_Output_Train,Percent_Error_Test=Test_Error/Avg_Target_Output_Test
+       )
+     
+   })
+   
+   output$EL_Strees_Test_Table<-renderTable({
+     EL_Strees_Test()
+   })
+   
+   EL_Best_Weights<-reactive({
+     req(input$password==my_password&input$go&input$EL_toggle)
+     
+     cut_props<-cut_props()
+     best_weightings<-data.frame(Test_Error=numeric(),RF_wt=numeric(),GB_wt=numeric(),
+                                 Ridge_wt=numeric(),Lasso_wt=numeric(),Train_Error=numeric(),
+                                 Well_Count_Train=numeric(),Well_Count_Test=numeric(),
+                                 Total_Target_Output_Train=numeric(),Total_Target_Output_Test=numeric(),Avg_Target_Output_Train=numeric(),
+                                 Avg_Target_Output_Test=numeric(),Percent_Error_Train=numeric(),Percent_Error_Test=numeric(),
+                                 low.cut=numeric(),high.cut=numeric())
+     
+     for (i in 1:dim(cut_props)[1]){
+       filter_df<-rf.prod.data%>%select(API,!!!input$el_filter_var1,!!!input$el_filter_var2,!!!input$el_filter_var3)
+       filter_df1<-rf.prod.data%>%select(!!!input$el_filter_var1)
+       filter_df2<-rf.prod.data%>%select(!!!input$el_filter_var2)
+       filter_df3<-rf.prod.data%>%select(!!!input$el_filter_var3)
+       
+       overlap_data1<-rf.prod.data%>%filter((!!!input$el_filter_var1)<=quantile(filter_df1[,1],cut_props$low.cut[i]),
+                                            (!!!input$el_filter_var1)>=quantile(filter_df1[,1],cut_props$high.cut[i]),
+                                            (!!!input$el_filter_var2)<=quantile(filter_df2[,1],cut_props$low.cut[i]),
+                                            (!!!input$el_filter_var2)>=quantile(filter_df2[,1],cut_props$high.cut[i]),
+                                            (!!!input$el_filter_var3)<=quantile(filter_df3[,1],cut_props$low.cut[i]),
+                                            (!!!input$el_filter_var3)>=quantile(filter_df3[,1],cut_props$high.cut[i]))
+       
+       overlap_low_df1<-overlap_data1%>%slice_sample(prop = input$el_train_prop)
+       overlap_high_df1<-overlap_data1%>%anti_join(overlap_low_df1,by=c("API"="API"))
+       
+       low_df1<-rf.prod.data%>%anti_join(overlap_data1,by=c("API"="API"))%>%
+         filter((!!!input$el_filter_var1)<quantile(filter_df1[,1],min(cut_props$low.cut[i],cut_props$high.cut[i])),
+                (!!!input$el_filter_var2)<quantile(filter_df2[,1],min(cut_props$low.cut[i],cut_props$high.cut[i])),
+                (!!!input$el_filter_var3)<quantile(filter_df3[,1],min(cut_props$low.cut[i],cut_props$high.cut[i])))%>%
+         rbind(overlap_low_df1)%>%
+         select(!!!input$el_target_var,!!!input$el_formula_var)
+       
+       high_df1<-rf.prod.data%>%anti_join(overlap_data1,by=c("API"="API"))%>%
+         filter((!!!input$el_filter_var1)>quantile(filter_df1[,1],max(cut_props$low.cut[i],cut_props$high.cut[i])),
+                (!!!input$el_filter_var2)>quantile(filter_df2[,1],max(cut_props$low.cut[i],cut_props$high.cut[i])),
+                (!!!input$el_filter_var3)>quantile(filter_df3[,1],max(cut_props$low.cut[i],cut_props$high.cut[i])))%>%
+         rbind(overlap_high_df1)%>%
+         select(!!!input$el_target_var,!!!input$el_formula_var)
+      
+       ##Data formatting for Ridge Regression
+       low_ridge_df1_y<-select(low_df1,!!!input$el_target_var)[,1]
+       low_ridge_df1_x<-data.matrix(low_df1%>%select(-(!!!input$el_target_var)))
+       
+       high_ridge_df1_y<-select(high_df1,!!!input$el_target_var)[,1]
+       high_ridge_df1_x<-data.matrix(high_df1%>%select(-(!!!input$el_target_var)))
+
+       ##Random Forest
+       rf_model1<-randomForest(as.formula(paste(input$el_target_var,"~ .")),data = low_df1, ntree=input$el_num_tree)
+       train.error.rf1<-rmse(select(low_df1,!!!input$el_target_var)[,1],predict(rf_model1))
+       test.error.rf1<-rmse(select(high_df1,!!!input$el_target_var)[,1],predict(rf_model1,newdata = high_df1))
+       
+       ##Gradient Boosting
+       gb_model1<-gbm(as.formula(paste(input$el_target_var,"~ .")),data = low_df1, n.trees = input$el_num_tree)
+       train.error.gb1<-rmse(select(low_df1,!!!input$el_target_var)[,1],predict(gb_model1))
+       test.error.gb1<-rmse(select(high_df1,!!!input$el_target_var)[,1],predict(gb_model1,newdata = high_df1))
+       
+       ##Ridge Regression
+       cv_ridge_model1 <- cv.glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 0)
+       ridge_model1_best_lambda <- cv_ridge_model1$lambda.min
+       ridge_best_model1 <- glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 0, lambda = ridge_model1_best_lambda)
+       train.error.ridge1<-rmse(low_ridge_df1_y,predict(ridge_best_model1, s = ridge_model1_best_lambda, newx = low_ridge_df1_x))
+       test.error.ridge1<-rmse(high_ridge_df1_y,predict(ridge_best_model1, s = ridge_model1_best_lambda, newx = high_ridge_df1_x))
+       
+       ##Lasso Regression
+       cv_lasso_model1 <- cv.glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 1)
+       lasso_model1_best_lambda <- cv_lasso_model1$lambda.min
+       lasso_best_model1 <- glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 1, lambda = lasso_model1_best_lambda)
+       train.error.lasso1<-rmse(low_ridge_df1_y,predict(lasso_best_model1, s = lasso_model1_best_lambda, newx = low_ridge_df1_x))
+       test.error.lasso1<-rmse(high_ridge_df1_y,predict(lasso_best_model1, s = lasso_model1_best_lambda, newx = high_ridge_df1_x))
+       
+       ##create Output
+       output1<-data.frame(Model_Name=c("RF Percentile","GB Percentile","Ridge Percentile","Lasso Percentile"),
+                           Train_Error=c(train.error.rf1,train.error.gb1,train.error.ridge1,train.error.lasso1),
+                           Test_Error=c(test.error.rf1,test.error.gb1,test.error.ridge1,test.error.lasso1))
+       
+       output_train<-data.frame(Actual_BOE=low_ridge_df1_y,
+                                RF_Pred=predict(rf_model1),
+                                GB_Pred=predict(gb_model1),
+                                X1=predict(ridge_best_model1, s = ridge_model1_best_lambda, newx = low_ridge_df1_x)[,1],
+                                X1.1=predict(lasso_best_model1, s = lasso_model1_best_lambda, newx = low_ridge_df1_x)[,1])%>%
+         mutate(Ridge_Pred=X1,Lasso_Pred=X1.1)%>%
+         select(-(X1:X1.1))
+       
+       output_test<-data.frame(Actual_BOE=high_ridge_df1_y,
+                               RF_Pred=predict(rf_model1,newdata = high_df1),
+                               GB_Pred=predict(gb_model1,newdata = high_df1),
+                               X1=predict(ridge_best_model1, s = ridge_model1_best_lambda, newx = high_ridge_df1_x)[,1],
+                               X1.1=predict(lasso_best_model1, s = lasso_model1_best_lambda, newx = high_ridge_df1_x)[,1])%>%
+         mutate(Ridge_Pred=X1,Lasso_Pred=X1.1)%>%
+         select(-(X1:X1.1))
+       
+       ##create weightings for different aggregate models
+       weights.df<-expand.grid(RF_wt=seq(0,1,input$el_weight_step),
+                               GB_wt=seq(0,1,input$el_weight_step),
+                               Ridge_wt=seq(0,1,input$el_weight_step),
+                               Lasso_wt=seq(0,1,input$el_weight_step))%>%
+         mutate(Total_Weight=RF_wt+GB_wt+Ridge_wt+Lasso_wt)%>%
+         filter(Total_Weight==1)%>%select(-Total_Weight)
+       weights.df<-weights.df%>%mutate(ID=seq(1,dim(weights.df)[[1]]))
+       
+       ##Loop through different weights for training errors
+       output_train_errors<-data.frame(ID=numeric(),Train_Error=numeric())
+       for (j in 1:dim(weights.df)[[1]]){
+         temp_df<-output_train%>%
+           mutate(Weighted_Pred=weights.df$RF_wt[j]*RF_Pred+weights.df$GB_wt[j]*GB_Pred+weights.df$Ridge_wt[j]*Ridge_Pred+weights.df$Lasso_wt[j]*Lasso_Pred)
+         this_result<-data.frame(ID=j,Train_Error=rmse(output_train$Actual_BOE,temp_df$Weighted_Pred))
+         output_train_errors<-rbind(output_train_errors,this_result)
+       }
+       output_train_errors<-output_train_errors%>%left_join(weights.df)%>%
+         arrange(Train_Error)
+       ##Loop through different weights for testing errors
+       output_test_errors<-data.frame(ID=numeric(),Test_Error=numeric())
+       for (k in 1:dim(weights.df)[[1]]){
+         temp_df<-output_test%>%
+           mutate(Weighted_Pred=weights.df$RF_wt[k]*RF_Pred+weights.df$GB_wt[k]*GB_Pred+weights.df$Ridge_wt[k]*Ridge_Pred+weights.df$Lasso_wt[k]*Lasso_Pred)
+         this_result<-data.frame(ID=k,Test_Error=rmse(output_test$Actual_BOE,temp_df$Weighted_Pred))
+         output_test_errors<-rbind(output_test_errors,this_result)
+         
+       }
+       output_test_errors<-output_test_errors%>%left_join(weights.df)%>%
+         arrange(Test_Error)
+       
+       #Create Output file with Train and Test Models based on Weightings
+       output_errors1<-output_test_errors%>%left_join(select(output_train_errors,ID,Train_Error))%>%
+         mutate(Well_Count_Train=dim(low_df1)[1],Well_Count_Test=dim(high_df1)[1],
+                Total_Target_Output_Train=sum(low_ridge_df1_y),Total_Target_Output_Test=sum(high_ridge_df1_y),
+                Avg_Target_Output_Train=Total_Target_Output_Train/Well_Count_Train,Avg_Target_Output_Test=Total_Target_Output_Test/Well_Count_Test,
+                Percent_Error_Train=Train_Error/Avg_Target_Output_Train,Percent_Error_Test=Test_Error/Avg_Target_Output_Test
+         )
+
+        this_weight<-output_errors1[1,]%>%
+          select(-ID)%>%mutate(low.cut=cut_props$low.cut[i],high.cut=cut_props$high.cut[i])
+        best_weightings<-rbind(best_weightings,this_weight)
+       
+     }
+     best_weightings
+     
+   })
+   
+   output$EL_Table<-renderTable({
+     req(input$password==my_password&input$go&input$EL_toggle)
+     EL_Best_Weights()
+   })
+   
+   
+   output$download_EL_Best_Weights<-downloadHandler(
+     filename = function() {
+       paste0("Ensemble Learning", " Weightings Table.csv")
+     },
+     content=function(file) {
+       write.csv(EL_Best_Weights(),file,row.names=FALSE)
+     }
+   )
+   
+   output$download_EL_Stress_Test<-downloadHandler(
+     filename = function() {
+       paste0("Stress Test LC ",input$el_low," HC ",input$el_high ," Weightings Error Table.csv")
+     },
+     content=function(file) {
+       write.csv(EL_Strees_Test(),file,row.names=FALSE)
+     }
+   )
    
 }
 
