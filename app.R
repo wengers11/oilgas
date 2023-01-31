@@ -12,6 +12,9 @@
 
 ##https://stackoverflow.com/questions/32363998/function-to-calculate-geospatial-distance-between-two-points-lat-long-using-r
 
+##ggmap setup and tutorial
+#https://rpubs.com/jcraggy/841199
+
 # install.packages(c("shiny", "shinyWidgets","dplyr","tidyr","lubridate","ggplot2","ggmap","stringr",
 #                     "data.table","Metrics","zoo","factoextra","cluster","randomForest",
 #                     "earth","class","sp","rgeos","geosphere","gstat","EnvStats",
@@ -115,6 +118,7 @@ ui <- fluidPage(
                 mainPanel(
                    h3(textOutput("info_header")),
                    textOutput("info"),
+                   uiOutput("info_link"),
                    h3(textOutput("info_chart_header")),
                    plotOutput("PLPlot")
                 )
@@ -214,7 +218,7 @@ ui <- fluidPage(
                        numericInput("pl_min_month_density","Min Months for Density Plot",12),
                        numericInput("pl_max_month_density","Max Months for Density Plot",12),
                        prettyToggle(
-                          inputId = "pl_toggle", value = TRUE,
+                          inputId = "pl_toggle", value = FALSE,
                           label_on = "Run Power Law Errors", icon_on = icon("check"),
                           label_off = "Don't run Power Law Errors", icon_off = icon("remove"))
                      ),
@@ -282,7 +286,7 @@ ui <- fluidPage(
                        numericInput("num_train_clust","# of Training Wells",value=10000),
                        selectizeInput("rf_clust_map","Select Clusters to Display on Map",seq(1,20),selected=seq(1,5),multiple = TRUE),
                        prettyToggle( ##Use this toggle to prevent clusters from being created too soon
-                         inputId = "rf_toggle2", value = FALSE,
+                         inputId = "rf_toggle2", value = TRUE,
                          label_on = "Run Cluster Random Forest!", icon_on = icon("check"),
                          label_off = "Don't run Cluster Random Forest", icon_off = icon("remove"))
                      ),
@@ -492,14 +496,14 @@ ui <- fluidPage(
                 ),
 
                mainPanel(
-                 h3(textOutput("EL_Stress_Test_text")),
-                 tableOutput("EL_Strees_Test_Table"),
                  h3(textOutput("EL_low_text")),
                  tableOutput("EL_Low_df"),
                  h3(textOutput("EL_high_text")),
                  tableOutput("EL_High_df"),
                  h3(textOutput("EL_table_text")),
-                 tableOutput("EL_Table")
+                 tableOutput("EL_Table"),
+                 h3(textOutput("EL_Stress_Test_text")),
+                 tableOutput("EL_Strees_Test_Table")
                )
       )
       
@@ -516,6 +520,11 @@ server <- function(input, output, session) {
    
    output$info<-renderText({
       "This application is used to analyze Oil and Gas Production from the Eagle Ford field in Texas."
+   })
+   
+   url <- a("Oil App Information", href="https://docs.google.com/document/d/1SALS3FKkuqM97dKChQqXyLBWq0OC0-IZ/edit")
+   output$info_link <- renderUI({
+     tagList("Read Me:", url)
    })
    
    output$info_chart_header<-renderText({
@@ -560,7 +569,7 @@ server <- function(input, output, session) {
          select(Months.On.Production,Model_BOE_Produced,Pred)%>%mutate(BOE_Produced=Model_BOE_Produced)%>%select(-Model_BOE_Produced)
       graph.data<-pred.data%>%pivot_longer(-Months.On.Production, names_to= "Output_Type", values_to="BOE.per.Month")
       PL.BOE.well.plot<-ggplot(graph.data,aes(x=Months.On.Production,y=BOE.per.Month,colour=Output_Type))+
-         geom_point(size=2)+geom_line(size=1.2)+
+         geom_point(size=2)+geom_line(linewidth=1.2)+
          theme(text = element_text(size=20),legend.position="bottom")+
          ggtitle(paste0("BOE Power Law Fit using All Months\nAPI#",input$API_num,":\n",round(exp(coef(BOE.model))[1],2),"*(Months.On.Production)^",round((coef(BOE.model))[2],2),")"))
       PL.BOE.well.plot
@@ -675,7 +684,7 @@ server <- function(input, output, session) {
    )
    
    import_krig_clust<-reactive({
-      req(input$password==my_password&input$go&input$clust_toggle)
+      #req(input$password==my_password&input$go&input$clust_toggle)
       krig_import_df<-krig_rf_data()%>%select(API)%>%left_join(rf.prod.data,by=c("API"="API"))%>%
          mutate(Cluster=factor(krig_clust_model()$cluster))
       krig_import_df
@@ -764,10 +773,12 @@ server <- function(input, output, session) {
    ##Variable importance of random forest
    randForest<-reactive({
      req(input$password==my_password&input$go)
-     cluster.data2<-mutate(rf.prod.data,Cluster=factor(ClustData()$cluster))
      
      if(input$clust_toggle){
         cluster.data2<-import_krig_clust()
+     }
+     else{
+       cluster.data2<-mutate(rf.prod.data,Cluster=factor(ClustData()$cluster))
      }
      
      
@@ -777,8 +788,15 @@ server <- function(input, output, session) {
      model.data<-na.omit(model.data)
      
      #BOE_Prod_2yr,Oil_Prod_2yr,Gas_Prod_2yr,Cumulative.Oil.Production...Mstb.,Cumulative.Gas.Production...MMscf.,BOE_Cum_6mon
-     set.seed(107)
-     rf.oil.prod<-randomForest(as.formula(paste(input$rf_target_var,"~ .")), data=model.data, ntree=input$cl_tree_num)
+     withProgress(message = 'Calculating Random Forest Importance', value = 0, {
+       # Number of times we'll go through the loop
+       n <- 1
+       set.seed(107)
+       rf.oil.prod<-randomForest(as.formula(paste(input$rf_target_var,"~ .")), data=model.data, ntree=input$cl_tree_num)
+       
+       incProgress(1/n, detail = paste(1, " of ", n))
+     })
+     rf.oil.prod
    })  
    
    output$rand_forest<-renderPlot({
@@ -805,10 +823,12 @@ server <- function(input, output, session) {
    
    cl_bayes.boe.model<-reactive({
      req(input$password==my_password&input$go)
-     cluster.data2<-mutate(rf.prod.data,Cluster=factor(ClustData()$cluster))
      
      if(input$clust_toggle){
        cluster.data2<-import_krig_clust()
+     }
+     else{
+       cluster.data2<-mutate(rf.prod.data,Cluster=factor(ClustData()$cluster))
      }
      
      model.data<-cluster.data2%>%dplyr::select(!!!input$rf_target_var,Cluster,!!!input$rf_var)%>%
@@ -817,11 +837,16 @@ server <- function(input, output, session) {
      model.data<-na.omit(model.data)
      
      #BOE_Prod_2yr,Oil_Prod_2yr,Gas_Prod_2yr,Cumulative.Oil.Production...Mstb.,Cumulative.Gas.Production...MMscf.,BOE_Cum_6mon
-     set.seed(107)
-     bayes.boe.prod.model <- train(as.formula(paste(input$rf_target_var,"~ .")),
-                                   data = model.data,
-                                   method = "bayesglm"  # now we're using the bayesian glm method
-     )
+     withProgress(message = 'Calculating Bayesian Importance', value = 0, {
+       # Number of times we'll go through the loop
+       n <- 1
+       set.seed(107)
+       bayes.boe.prod.model <- train(as.formula(paste(input$rf_target_var,"~ .")),
+                                     data = model.data,
+                                     method = "bayesglm"  # now we're using the bayesian glm method
+       )
+       incProgress(1/n, detail = paste(1, " of ", n))
+     })
      bayes.boe.prod.model
    })
    
@@ -847,10 +872,12 @@ server <- function(input, output, session) {
    
    cl_gbm.boe.model<-reactive({
      req(input$password==my_password&input$go)
-     cluster.data2<-mutate(rf.prod.data,Cluster=factor(ClustData()$cluster))
      
      if(input$clust_toggle){
        cluster.data2<-import_krig_clust()
+     }
+     else{
+       cluster.data2<-mutate(rf.prod.data,Cluster=factor(ClustData()$cluster))
      }
      
      model.data<-cluster.data2%>%dplyr::select(!!!input$rf_target_var,Cluster,!!!input$rf_var)%>%
@@ -859,9 +886,14 @@ server <- function(input, output, session) {
      model.data<-na.omit(model.data)
      
      #BOE_Prod_2yr,Oil_Prod_2yr,Gas_Prod_2yr,Cumulative.Oil.Production...Mstb.,Cumulative.Gas.Production...MMscf.,BOE_Cum_6mon
-     set.seed(107)
-     gbm.boe.prod.model <- gbm(as.formula(paste(input$rf_target_var,"~ .")),
-                                   data = model.data, n.trees = input$cl_tree_num)
+     withProgress(message = 'Calculating Gradient Boosting Importance', value = 0, {
+       # Number of times we'll go through the loop
+       n <- 1
+       set.seed(107)
+       gbm.boe.prod.model <- gbm(as.formula(paste(input$rf_target_var,"~ .")),
+                                     data = model.data, n.trees = input$cl_tree_num)
+       incProgress(1/n, detail = paste(1, " of ", n))
+     })
      
      gbm.boe.prod.model
    })
@@ -918,7 +950,7 @@ server <- function(input, output, session) {
      req(input$password==my_password&input$go)
      joined.well.data<-rev.cost.joined.data()%>%filter(API==input$API_num)
      oil.price.plot<-ggplot(joined.well.data, aes(x=Current.Date, y=oil.barrel.price)) + 
-       geom_point(size=2)+geom_line(size=1.2)+
+       geom_point(size=2)+geom_line(linewidth=1.2)+
        theme(text = element_text(size=20))+
        ggtitle(paste0("Oil Price per Barrel Over\nLifetime of Well API ",input$API_num))+
        ylab("Oil Price ($/barrel)")
@@ -929,7 +961,7 @@ server <- function(input, output, session) {
      req(input$password==my_password&input$go)
      joined.well.data<-rev.cost.joined.data()%>%filter(API==input$API_num)
      gas.price.plot<-ggplot(joined.well.data, aes(x=Current.Date, y=gas.price.dollars.per.mbtu)) + 
-       geom_point(size=2)+geom_line(size=1.2)+
+       geom_point(size=2)+geom_line(linewidth=1.2)+
        theme(text = element_text(size=20))+
        ggtitle(paste0("Gas Price per Mbtu Over\nLifetime of Well API ",input$API_num))+
        ylab("Gas Price ($/Mbtu)")
@@ -940,7 +972,7 @@ server <- function(input, output, session) {
      req(input$password==my_password&input$go)
      rev.well.data<-rev.cost.joined.data()%>%filter(API==input$API_num)
      rev.plot<-ggplot(rev.well.data, aes(x=Months.On.Production, y=Total_Month_Revenue)) + 
-       geom_point(size=2)+geom_line(size=1.2)+
+       geom_point(size=2)+geom_line(linewidth=1.2)+
        theme(text = element_text(size=20))+
        ggtitle(paste0("Revenue by Production Month \nfor Well API ",input$API_num))+
        ylab("Revenue ($)")
@@ -951,7 +983,7 @@ server <- function(input, output, session) {
      req(input$password==my_password&input$go)
      rev.well.data<-rev.cost.joined.data()%>%filter(API==input$API_num)%>%mutate(Cum.Revenue=cumsum(Total_Month_Revenue))
      cum.rev.plot<-ggplot(rev.well.data, aes(x=Months.On.Production, y=Cum.Revenue)) + 
-       geom_point(size=2)+geom_line(size=1.2)+
+       geom_point(size=2)+geom_line(linewidth=1.2)+
        theme(text = element_text(size=20),legend.position="bottom")+
        ggtitle(paste0("Cumulative Revenue by Production \nMonth for Well API ",input$API_num))+
        ylab("Cumulative Revenue ($)")
@@ -963,7 +995,7 @@ server <- function(input, output, session) {
      rev.clust.data<-rev.cost.joined.data()%>%filter(Cluster==input$clust_invest)%>%
        group_by(Months.On.Production)%>%summarise(Clust.Avg.Month.Rev.per.well=mean(Total_Month_Revenue,na.rm=TRUE))
      clust.rev.plot<-ggplot(rev.clust.data, aes(x=Months.On.Production, y=Clust.Avg.Month.Rev.per.well)) + 
-       geom_point(size=2)+geom_line(size=1.2)+
+       geom_point(size=2)+geom_line(linewidth=1.2)+
        theme(text = element_text(size=20))+
        ggtitle(paste0("Revenue by Production Month \nfor Cluster ",input$clust_invest))+
        ylab("Revenue per well($/well)")
@@ -976,7 +1008,7 @@ server <- function(input, output, session) {
        group_by(Months.On.Production)%>%summarise(Clust.Avg.Month.Rev.per.well=mean(Total_Month_Revenue,na.rm=TRUE))%>%
        mutate(Cum.Avg.Revenue.per.well=cumsum(Clust.Avg.Month.Rev.per.well))
      cum.clust.rev.plot<-ggplot(rev.clust.data, aes(x=Months.On.Production, y=Cum.Avg.Revenue.per.well)) + 
-       geom_point(size=2)+geom_line(size=1.2)+
+       geom_point(size=2)+geom_line(linewidth=1.2)+
        theme(text = element_text(size=20),legend.position="bottom")+
        ggtitle(paste0("Cumulative Revenue by Production \nMonth for Cluster ",input$clust_invest))+
        ylab("Cumulative Revenue ($)")
@@ -987,7 +1019,7 @@ server <- function(input, output, session) {
      req(input$password==my_password&input$go)
      graph.data<-rev.cost.joined.data()%>%filter(API==input$API_num)
      profit.plot<-ggplot(graph.data, aes(x=Months.On.Production, y=Total_Month_Profit)) + 
-       geom_point(size=2)+geom_line(size=1.2)+
+       geom_point(size=2)+geom_line(linewidth=1.2)+
        theme(text = element_text(size=20))+
        ggtitle(paste0("Profit by Production Month \nfor Well API ",input$API_num))+
        ylab("Profit ($)")
@@ -1000,7 +1032,7 @@ server <- function(input, output, session) {
        mutate(cumProfit=cumsum(Total_Month_Profit))
      npv<-round(sum(graph.data$NPV_Total_Month_Profit),2)
      profit.plot<-ggplot(graph.data, aes(x=Months.On.Production, y=cumProfit)) + 
-       geom_point(size=2)+geom_line(size=1.2)+
+       geom_point(size=2)+geom_line(linewidth=1.2)+
        theme(text = element_text(size=20))+
        ggtitle(paste0("Cumlative Profit by Production Month \nfor Well API ",input$API_num,"\nNPV: $",npv))+
        ylab("Cumlative Profit ($)")
@@ -1013,7 +1045,7 @@ server <- function(input, output, session) {
        group_by(Months.On.Production)%>%summarise(Clust_Month_Profit=mean(Total_Month_Profit,na.rm=TRUE),Clust_Month_NPV=mean(NPV_Total_Month_Profit,na.rm=TRUE))
      npv<-round(sum(graph.data$Clust_Month_NPV),2)
      profit.plot<-ggplot(graph.data, aes(x=Months.On.Production, y=Clust_Month_Profit)) + 
-       geom_point(size=2)+geom_line(size=1.2)+
+       geom_point(size=2)+geom_line(linewidth=1.2)+
        theme(text = element_text(size=20))+
        ggtitle(paste0("Avg. Profit by Production Month \nfor Cluster ",input$clust_invest,"\nAvg. NPV: $",npv))+
        ylab("Avg. Profit ($/well)")
@@ -1026,7 +1058,7 @@ server <- function(input, output, session) {
        group_by(Months.On.Production)%>%summarise(Clust_Month_Profit=mean(Total_Month_Profit,na.rm=TRUE))%>%
        mutate(cumProfit=cumsum(Clust_Month_Profit))
      profit.plot<-ggplot(graph.data, aes(x=Months.On.Production, y=cumProfit)) + 
-       geom_point(size=2)+geom_line(size=1.2)+
+       geom_point(size=2)+geom_line(linewidth=1.2)+
        theme(text = element_text(size=20))+
        ggtitle(paste0("Cumulative Profit by Production Month \nfor Cluster ",input$clust_invest))+
        ylab("Cumulative Avg. Profit ($/well)")
@@ -1034,6 +1066,7 @@ server <- function(input, output, session) {
    })
    
 ##PL tab
+   
    pl.data.table<-reactive({
       req(input$password==my_password&input$go&input$pl_toggle)
       set.seed(606)
@@ -1056,20 +1089,27 @@ server <- function(input, output, session) {
       pl.results<-data.frame(API=character(),Month_try=numeric(),Lead.Coef=numeric(),Power.Coef=numeric(),
                              Cum_error=numeric(),Abs_Percent_Error=numeric())
       
-      for (i in 1:dim(pl.tune)[[1]]){
-         this.well.data<-filter(pl.joined.data,API==pl.tune$API[i])%>%select(API,Months.On.Production,Model_BOE_Produced,ln.Month,ln.BOE)
-         model.data<-filter(this.well.data,Months.On.Production>=2,Months.On.Production<=pl.tune$Month_try[i])
-         BOE.model<-lm(ln.BOE~ln.Month,data=model.data)
-         pred.data<-this.well.data%>%filter(Months.On.Production>=2)%>%
-            mutate(Pred=(exp(coef(BOE.model))[1])*(Months.On.Production)^(coef(BOE.model))[2],
-                   Error=Model_BOE_Produced-Pred)%>%
-            filter(Months.On.Production<=input$max_error_months)
-         this.result<-data.frame(API=pl.tune$API[i],Month_try=pl.tune$Month_try[i],
-                                 Lead.Coef=exp(coef(BOE.model))[1],Power.Coef=(coef(BOE.model))[2],
-                                 Cum_error=sum(pred.data$Pred)-sum(pred.data$Model_BOE_Produced))%>%
-            mutate(Abs_Percent_Error=100*abs(Cum_error)/sum(pred.data$Model_BOE_Produced))
-         pl.results<-rbind(pl.results,this.result)
-      }
+      withProgress(message = 'Calculating Power Laws', value = 0, {
+        # Number of times we'll go through the loop
+        n <- dim(pl.tune)[[1]]
+        
+        for (i in 1:dim(pl.tune)[[1]]){
+           this.well.data<-filter(pl.joined.data,API==pl.tune$API[i])%>%select(API,Months.On.Production,Model_BOE_Produced,ln.Month,ln.BOE)
+           model.data<-filter(this.well.data,Months.On.Production>=2,Months.On.Production<=pl.tune$Month_try[i])
+           BOE.model<-lm(ln.BOE~ln.Month,data=model.data)
+           pred.data<-this.well.data%>%filter(Months.On.Production>=2)%>%
+              mutate(Pred=(exp(coef(BOE.model))[1])*(Months.On.Production)^(coef(BOE.model))[2],
+                     Error=Model_BOE_Produced-Pred)%>%
+              filter(Months.On.Production<=input$max_error_months)
+           this.result<-data.frame(API=pl.tune$API[i],Month_try=pl.tune$Month_try[i],
+                                   Lead.Coef=exp(coef(BOE.model))[1],Power.Coef=(coef(BOE.model))[2],
+                                   Cum_error=sum(pred.data$Pred)-sum(pred.data$Model_BOE_Produced))%>%
+              mutate(Abs_Percent_Error=100*abs(Cum_error)/sum(pred.data$Model_BOE_Produced))
+           pl.results<-rbind(pl.results,this.result)
+           
+           incProgress(1/n, detail = paste(i, " of ", n))
+        }
+      })
 
       pl.result.summary<-pl.results%>%group_by(Month_try)%>%summarise(Med_Abs_Percent_Error_BOE=median(Abs_Percent_Error))
 
@@ -1130,15 +1170,21 @@ server <- function(input, output, session) {
       b.result<-data.frame(b_try=numeric(),a_i_try=numeric(),Cum_Abs_Error=numeric())
       months.to.use<-input$num_month_fit
       
-      for (i in 1:dim(b.grid)[[1]]){
-         ##subtract "this_peak_month" from Months because peak production is month "this_peak_month" and decline estimate starts in month "this_peak_month"
-         this.data<-model.data%>%
-            mutate(Hyp_Pred=q_i/(1+b.grid$b_try[i]*a_i*(Months.On.Production-this_peak_month))^(1/b.grid$b_try[i]),
-                   Error=BOE-Hyp_Pred, Abs_Error=abs(Error))%>%
-            filter(Months.On.Production>=this_peak_month)
-         this.result<-data.frame(b_try=b.grid$b_try[i],a_i_try=b.grid$a_i_try[i],Cum_Abs_Error=abs(sum(this.data$Hyp_Pred)-sum(this.data$Month.BOE.Prod)))
-         b.result<-rbind(b.result,this.result)
-      }
+      withProgress(message = 'Calculating BOE Plot Curves', value = 0, {
+        # Number of times we'll go through the loop
+        n <- dim(b.grid)[[1]]
+        
+        for (i in 1:dim(b.grid)[[1]]){
+           ##subtract "this_peak_month" from Months because peak production is month "this_peak_month" and decline estimate starts in month "this_peak_month"
+           this.data<-model.data%>%
+              mutate(Hyp_Pred=q_i/(1+b.grid$b_try[i]*a_i*(Months.On.Production-this_peak_month))^(1/b.grid$b_try[i]),
+                     Error=BOE-Hyp_Pred, Abs_Error=abs(Error))%>%
+              filter(Months.On.Production>=this_peak_month)
+           this.result<-data.frame(b_try=b.grid$b_try[i],a_i_try=b.grid$a_i_try[i],Cum_Abs_Error=abs(sum(this.data$Hyp_Pred)-sum(this.data$Month.BOE.Prod)))
+           b.result<-rbind(b.result,this.result)
+        }
+        incProgress(1/n, detail = paste(i, " of ", n))
+      })
       
       b.result<-b.result%>%arrange((Cum_Abs_Error))
       b.best<-b.result$b_try[1]
@@ -1161,7 +1207,7 @@ server <- function(input, output, session) {
       cum.pl.per.error<-abs(sum(best.data$PL_Pred)-sum(best.data$BOE_Produced))/sum(best.data$BOE_Produced)
       
       best.b.plot<-ggplot(best.data.graph,aes(x=Months.On.Production,y=Prod_Value,colour=Output_Type))+
-         geom_point(size=2)+geom_line(size=1.2)+
+         geom_point(size=2)+geom_line(linewidth=1.2)+
          theme(text = element_text(size=20),legend.position="bottom")+
          annotate("text", x = quantile(best.data.graph$Months.On.Production,.75), y = max(best.data.graph$Prod_Value)*.85, size=6,
                   label = paste0("Hyp. b value: ",b.best,"\n","Abs.Per.Error PL: ",round(cum.pl.per.error,4)*100,"%\n",
@@ -1182,7 +1228,7 @@ server <- function(input, output, session) {
          select(Months.On.Production,Model_BOE_Produced,Pred)%>%mutate(BOE_Produced=Model_BOE_Produced)%>%select(-Model_BOE_Produced)
       error.data<-pred.data%>%mutate(Error_Month=Pred-BOE_Produced,Abs_Error_Month=abs(Error_Month),Abs_Percent_Error=Abs_Error_Month/BOE_Produced,Percent_Error=Error_Month/BOE_Produced)
       PL.BOE.well.error<-ggplot(error.data,aes(x=Months.On.Production,y=Percent_Error))+
-         geom_point(size=2)+geom_line(size=1.2)+
+         geom_point(size=2)+geom_line(linewidth=1.2)+
          theme(text = element_text(size=20))+
          scale_y_continuous(labels = scales::percent)+
          ggtitle(paste0("BOE Power Law Error using ", input$num_month_fit," Months\nAPI#",input$pl_api,":\nCumulative Percent Error: ",100*round(sum(error.data$Error_Month)/sum(error.data$BOE_Produced),3),"%"))
@@ -1213,15 +1259,21 @@ server <- function(input, output, session) {
      b.result<-data.frame(b_try=numeric(),a_i_try=numeric(),Cum_Abs_Error=numeric())
      months.to.use<-input$num_month_fit
      
-     for (i in 1:dim(b.grid)[[1]]){
-        ##subtract "this_peak_month" from Months because peak production is month "this_peak_month" and decline estimate starts in month "this_peak_month"
-        this.data<-model.data%>%
-           mutate(Hyp_Pred=q_i/(1+b.grid$b_try[i]*a_i*(Months.On.Production-this_peak_month))^(1/b.grid$b_try[i]),
-                  Error=BOE-Hyp_Pred, Abs_Error=abs(Error))%>%
-           filter(Months.On.Production>=this_peak_month)
-        this.result<-data.frame(b_try=b.grid$b_try[i],a_i_try=b.grid$a_i_try[i],Cum_Abs_Error=abs(sum(this.data$Hyp_Pred)-sum(this.data$Month.BOE.Prod)))
-        b.result<-rbind(b.result,this.result)
-     }
+     withProgress(message = 'Calculating Oil Plot Curves', value = 0, {
+       # Number of times we'll go through the loop
+       n <- dim(b.grid)[[1]]
+       
+       for (i in 1:dim(b.grid)[[1]]){
+          ##subtract "this_peak_month" from Months because peak production is month "this_peak_month" and decline estimate starts in month "this_peak_month"
+          this.data<-model.data%>%
+             mutate(Hyp_Pred=q_i/(1+b.grid$b_try[i]*a_i*(Months.On.Production-this_peak_month))^(1/b.grid$b_try[i]),
+                    Error=BOE-Hyp_Pred, Abs_Error=abs(Error))%>%
+             filter(Months.On.Production>=this_peak_month)
+          this.result<-data.frame(b_try=b.grid$b_try[i],a_i_try=b.grid$a_i_try[i],Cum_Abs_Error=abs(sum(this.data$Hyp_Pred)-sum(this.data$Month.BOE.Prod)))
+          b.result<-rbind(b.result,this.result)
+       }
+       incProgress(1/n, detail = paste(i, " of ", n))
+     })
      
      b.result<-b.result%>%arrange((Cum_Abs_Error))
      b.best<-b.result$b_try[1]
@@ -1244,7 +1296,7 @@ server <- function(input, output, session) {
      cum.pl.per.error<-abs(sum(best.data$PL_Pred)-sum(best.data$B_Oil_Produced))/sum(best.data$B_Oil_Produced)
      
      best.b.plot<-ggplot(best.data.graph,aes(x=Months.On.Production,y=Prod_Value,colour=Output_Type))+
-        geom_point(size=2)+geom_line(size=1.2)+
+        geom_point(size=2)+geom_line(linewidth=1.2)+
         theme(text = element_text(size=20),legend.position="bottom")+
         annotate("text", x = quantile(best.data.graph$Months.On.Production,.75), y = max(best.data.graph$Prod_Value)*.85, size=6,
                  label = paste0("Hyp. b value: ",b.best,"\n","Abs.Per.Error PL: ",round(cum.pl.per.error,4)*100,"%\n",
@@ -1263,7 +1315,7 @@ server <- function(input, output, session) {
        select(Months.On.Production,Model_Oil_Produced,Pred)%>%mutate(Oil_Produced=Model_Oil_Produced)%>%select(-Model_Oil_Produced)
      error.data<-pred.data%>%mutate(Error_Month=Pred-Oil_Produced,Abs_Error_Month=abs(Error_Month),Abs_Percent_Error=Abs_Error_Month/Oil_Produced,Percent_Error=Error_Month/Oil_Produced)
      PL.oil.well.error<-ggplot(error.data,aes(x=Months.On.Production,y=Percent_Error))+
-       geom_point(size=2)+geom_line(size=1.2)+
+       geom_point(size=2)+geom_line(linewidth=1.2)+
        theme(text = element_text(size=20))+
        scale_y_continuous(labels = scales::percent)+
        ggtitle(paste0("Oil Power Law Error using ", input$num_month_fit," Months\nAPI#",input$pl_api,":\nCumulative Percent Error: ",100*round(sum(error.data$Error_Month)/sum(error.data$Oil_Produced),3),"%"))
@@ -1294,15 +1346,21 @@ server <- function(input, output, session) {
      b.result<-data.frame(b_try=numeric(),a_i_try=numeric(),Cum_Abs_Error=numeric())
      months.to.use<-input$num_month_fit
      
-     for (i in 1:dim(b.grid)[[1]]){
-        ##subtract "this_peak_month" from Months because peak production is month "this_peak_month" and decline estimate starts in month "this_peak_month"
-        this.data<-model.data%>%
-           mutate(Hyp_Pred=q_i/(1+b.grid$b_try[i]*a_i*(Months.On.Production-this_peak_month))^(1/b.grid$b_try[i]),
-                  Error=BOE-Hyp_Pred, Abs_Error=abs(Error))%>%
-           filter(Months.On.Production>=this_peak_month)
-        this.result<-data.frame(b_try=b.grid$b_try[i],a_i_try=b.grid$a_i_try[i],Cum_Abs_Error=abs(sum(this.data$Hyp_Pred)-sum(this.data$Month.BOE.Prod)))
-        b.result<-rbind(b.result,this.result)
-     }
+     withProgress(message = 'Calculating Gas Plot Curves', value = 0, {
+       # Number of times we'll go through the loop
+       n <- dim(b.grid)[[1]]
+       
+       for (i in 1:dim(b.grid)[[1]]){
+          ##subtract "this_peak_month" from Months because peak production is month "this_peak_month" and decline estimate starts in month "this_peak_month"
+          this.data<-model.data%>%
+             mutate(Hyp_Pred=q_i/(1+b.grid$b_try[i]*a_i*(Months.On.Production-this_peak_month))^(1/b.grid$b_try[i]),
+                    Error=BOE-Hyp_Pred, Abs_Error=abs(Error))%>%
+             filter(Months.On.Production>=this_peak_month)
+          this.result<-data.frame(b_try=b.grid$b_try[i],a_i_try=b.grid$a_i_try[i],Cum_Abs_Error=abs(sum(this.data$Hyp_Pred)-sum(this.data$Month.BOE.Prod)))
+          b.result<-rbind(b.result,this.result)
+       }
+       incProgress(1/n, detail = paste(i, " of ", n))
+     })
      
      b.result<-b.result%>%arrange((Cum_Abs_Error))
      b.best<-b.result$b_try[1]
@@ -1325,7 +1383,7 @@ server <- function(input, output, session) {
      cum.pl.per.error<-abs(sum(best.data$PL_Pred)-sum(best.data$B_Gas_Produced))/sum(best.data$B_Gas_Produced)
      
      best.b.plot<-ggplot(best.data.graph,aes(x=Months.On.Production,y=Prod_Value,colour=Output_Type))+
-        geom_point(size=2)+geom_line(size=1.2)+
+        geom_point(size=2)+geom_line(linewidth=1.2)+
         theme(text = element_text(size=20),legend.position="bottom")+
         annotate("text", x = quantile(best.data.graph$Months.On.Production,.75), y = max(best.data.graph$Prod_Value)*.85, size=6,
                  label = paste0("Hyp. b value: ",b.best,"\n","Abs.Per.Error PL: ",round(cum.pl.per.error,4)*100,"%\n",
@@ -1344,7 +1402,7 @@ server <- function(input, output, session) {
        select(Months.On.Production,Model_Gas_Produced,Pred)%>%mutate(Gas_Produced=Model_Gas_Produced)%>%select(-Model_Gas_Produced)
      error.data<-pred.data%>%mutate(Error_Month=Pred-Gas_Produced,Abs_Error_Month=abs(Error_Month),Abs_Percent_Error=Abs_Error_Month/Gas_Produced,Percent_Error=Error_Month/Gas_Produced)
      PL.gas.well.error<-ggplot(error.data,aes(x=Months.On.Production,y=Percent_Error))+
-       geom_point(size=2)+geom_line(size=1.2)+
+       geom_point(size=2)+geom_line(linewidth=1.2)+
        theme(text = element_text(size=20))+
        scale_y_continuous(labels = scales::percent)+
        ggtitle(paste0("Gas Power Law Error using ", input$num_month_fit," Months\nAPI#",input$pl_api,":\nCumulative Percent Error: ",100*round(sum(error.data$Error_Month)/sum(error.data$Gas_Produced),3),"%"))
@@ -1380,16 +1438,22 @@ server <- function(input, output, session) {
       b.grid<-expand.grid(b_try=seq(input$pl_b_start,input$pl_b_end,input$pl_b_step),a_i_try=seq(a_i-.05,a_i+.05,input$pl_a_i_step))
       b.result<-data.frame(b_try=numeric(),a_i_try=numeric(),Cum_Abs_Error=numeric())
       months.to.use<-input$num_month_fit
+      
+      withProgress(message = 'Calculating Cluster BOE Plot Curves', value = 0, {
+        # Number of times we'll go through the loop
+        n <- dim(b.grid)[[1]]
 
-      for (i in 1:dim(b.grid)[[1]]){
-         ##subtract "this_peak_month" from Months because peak production is month "this_peak_month" and decline estimate starts in month "this_peak_month"
-         this.data<-model.data%>%
-            mutate(Hyp_Pred=q_i/(1+b.grid$b_try[i]*a_i*(Months.On.Production-this_peak_month))^(1/b.grid$b_try[i]),
-                   Error=BOE-Hyp_Pred, Abs_Error=abs(Error))%>%
-            filter(Months.On.Production>=this_peak_month)
-         this.result<-data.frame(b_try=b.grid$b_try[i],a_i_try=b.grid$a_i_try[i],Cum_Abs_Error=abs(sum(this.data$Hyp_Pred)-sum(this.data$BOE)))
-         b.result<-rbind(b.result,this.result)
-      }
+        for (i in 1:dim(b.grid)[[1]]){
+           ##subtract "this_peak_month" from Months because peak production is month "this_peak_month" and decline estimate starts in month "this_peak_month"
+           this.data<-model.data%>%
+              mutate(Hyp_Pred=q_i/(1+b.grid$b_try[i]*a_i*(Months.On.Production-this_peak_month))^(1/b.grid$b_try[i]),
+                     Error=BOE-Hyp_Pred, Abs_Error=abs(Error))%>%
+              filter(Months.On.Production>=this_peak_month)
+           this.result<-data.frame(b_try=b.grid$b_try[i],a_i_try=b.grid$a_i_try[i],Cum_Abs_Error=abs(sum(this.data$Hyp_Pred)-sum(this.data$BOE)))
+           b.result<-rbind(b.result,this.result)
+        }
+        incProgress(1/n, detail = paste(i, " of ", n))
+      })
 
       b.result<-b.result%>%arrange((Cum_Abs_Error))
       b.best<-b.result$b_try[1]
@@ -1415,7 +1479,7 @@ server <- function(input, output, session) {
       cum.pl.per.error<-abs(sum(best.data$PL_Pred)-sum(best.data$BOE_Produced))/sum(best.data$BOE_Produced)
 
       best.b.plot<-ggplot(best.data.graph,aes(x=Months.On.Production,y=Prod_Value,colour=Output_Type))+
-         geom_point(size=2)+geom_line(size=1.2)+
+         geom_point(size=2)+geom_line(linewidth=1.2)+
          theme(text = element_text(size=20),legend.position="bottom")+
          annotate("text", x = quantile(best.data.graph$Months.On.Production,.75), y = max(best.data.graph$Prod_Value)*.85, size=6,
                   label = paste0("Hyp. b value: ",b.best,"\n","Abs.Per.Error PL: ",round(cum.pl.per.error,4)*100,"%\n",
@@ -1440,7 +1504,7 @@ server <- function(input, output, session) {
          select(Months.On.Production,Model_BOE_Produced,Pred)%>%mutate(BOE_Produced=Model_BOE_Produced)%>%select(-Model_BOE_Produced)
       error.data<-pred.data%>%mutate(Error_Month=Pred-BOE_Produced,Abs_Error_Month=abs(Error_Month),Abs_Percent_Error=Abs_Error_Month/BOE_Produced,Percent_Error=Error_Month/BOE_Produced)
       PL.BOE.clust.error<-ggplot(error.data,aes(x=Months.On.Production,y=Percent_Error))+
-         geom_point(size=2)+geom_line(size=1.2)+
+         geom_point(size=2)+geom_line(linewidth=1.2)+
          theme(text = element_text(size=20))+
          scale_y_continuous(labels = scales::percent)+
          ggtitle(paste0("BOE Power Law Error using ", input$num_month_fit," Months\nCluster#",input$clust_invest,":\nCumulative Percent Error: ",100*round(sum(error.data$Error_Month)/sum(error.data$BOE_Produced),3),"%"))
@@ -1477,15 +1541,21 @@ server <- function(input, output, session) {
      b.result<-data.frame(b_try=numeric(),a_i_try=numeric(),Cum_Abs_Error=numeric())
      months.to.use<-input$num_month_fit
      
-     for (i in 1:dim(b.grid)[[1]]){
-        ##subtract "this_peak_month" from Months because peak production is month "this_peak_month" and decline estimate starts in month "this_peak_month"
-        this.data<-model.data%>%
-           mutate(Hyp_Pred=q_i/(1+b.grid$b_try[i]*a_i*(Months.On.Production-this_peak_month))^(1/b.grid$b_try[i]),
-                  Error=BOE-Hyp_Pred, Abs_Error=abs(Error))%>%
-           filter(Months.On.Production>=this_peak_month)
-        this.result<-data.frame(b_try=b.grid$b_try[i],a_i_try=b.grid$a_i_try[i],Cum_Abs_Error=abs(sum(this.data$Hyp_Pred)-sum(this.data$BOE)))
-        b.result<-rbind(b.result,this.result)
-     }
+     withProgress(message = 'Calculating Cluster Oil Plot Curves', value = 0, {
+       # Number of times we'll go through the loop
+       n <- dim(b.grid)[[1]]
+       
+       for (i in 1:dim(b.grid)[[1]]){
+          ##subtract "this_peak_month" from Months because peak production is month "this_peak_month" and decline estimate starts in month "this_peak_month"
+          this.data<-model.data%>%
+             mutate(Hyp_Pred=q_i/(1+b.grid$b_try[i]*a_i*(Months.On.Production-this_peak_month))^(1/b.grid$b_try[i]),
+                    Error=BOE-Hyp_Pred, Abs_Error=abs(Error))%>%
+             filter(Months.On.Production>=this_peak_month)
+          this.result<-data.frame(b_try=b.grid$b_try[i],a_i_try=b.grid$a_i_try[i],Cum_Abs_Error=abs(sum(this.data$Hyp_Pred)-sum(this.data$BOE)))
+          b.result<-rbind(b.result,this.result)
+       }
+       incProgress(1/n, detail = paste(i, " of ", n))
+     })
      
      b.result<-b.result%>%arrange((Cum_Abs_Error))
      b.best<-b.result$b_try[1]
@@ -1532,7 +1602,7 @@ server <- function(input, output, session) {
        mutate(Pred=(exp(coef(oil.model))[1])*(Months.On.Production)^(coef(oil.model))[2])
      error.data<-pred.data%>%mutate(Error_Month=Pred-Clust_Avg_Oil_Prod,Abs_Error_Month=abs(Error_Month),Abs_Percent_Error=Abs_Error_Month/Clust_Avg_Oil_Prod,Percent_Error=Error_Month/Clust_Avg_Oil_Prod)
      PL.oil.clust.error<-ggplot(error.data,aes(x=Months.On.Production,y=Percent_Error))+
-       geom_point(size=2)+geom_line(size=1.2)+
+       geom_point(size=2)+geom_line(linewidth=1.2)+
        theme(text = element_text(size=20))+
        scale_y_continuous(labels = scales::percent)+
        ggtitle(paste0("Oil Power Law Error using ", input$num_month_fit," Months\nCluster#",input$clust_invest,":\nCumulative Percent Error: ",100*round(sum(error.data$Error_Month)/sum(error.data$Clust_Avg_Oil_Prod),3),"%"))
@@ -1569,15 +1639,21 @@ server <- function(input, output, session) {
      b.result<-data.frame(b_try=numeric(),a_i_try=numeric(),Cum_Abs_Error=numeric())
      months.to.use<-input$num_month_fit
      
-     for (i in 1:dim(b.grid)[[1]]){
-        ##subtract "this_peak_month" from Months because peak production is month "this_peak_month" and decline estimate starts in month "this_peak_month"
-        this.data<-model.data%>%
-           mutate(Hyp_Pred=q_i/(1+b.grid$b_try[i]*a_i*(Months.On.Production-this_peak_month))^(1/b.grid$b_try[i]),
-                  Error=BOE-Hyp_Pred, Abs_Error=abs(Error))%>%
-           filter(Months.On.Production>=this_peak_month)
-        this.result<-data.frame(b_try=b.grid$b_try[i],a_i_try=b.grid$a_i_try[i],Cum_Abs_Error=abs(sum(this.data$Hyp_Pred)-sum(this.data$BOE)))
-        b.result<-rbind(b.result,this.result)
-     }
+     withProgress(message = 'Calculating Cluster Gas Plot Curves', value = 0, {
+       # Number of times we'll go through the loop
+       n <- dim(b.grid)[[1]]
+     
+       for (i in 1:dim(b.grid)[[1]]){
+          ##subtract "this_peak_month" from Months because peak production is month "this_peak_month" and decline estimate starts in month "this_peak_month"
+          this.data<-model.data%>%
+             mutate(Hyp_Pred=q_i/(1+b.grid$b_try[i]*a_i*(Months.On.Production-this_peak_month))^(1/b.grid$b_try[i]),
+                    Error=BOE-Hyp_Pred, Abs_Error=abs(Error))%>%
+             filter(Months.On.Production>=this_peak_month)
+          this.result<-data.frame(b_try=b.grid$b_try[i],a_i_try=b.grid$a_i_try[i],Cum_Abs_Error=abs(sum(this.data$Hyp_Pred)-sum(this.data$BOE)))
+          b.result<-rbind(b.result,this.result)
+       }
+       incProgress(1/n, detail = paste(i, " of ", n))
+     })
      
      b.result<-b.result%>%arrange((Cum_Abs_Error))
      b.best<-b.result$b_try[1]
@@ -1603,7 +1679,7 @@ server <- function(input, output, session) {
      cum.pl.per.error<-abs(sum(best.data$PL_Pred)-sum(best.data$Gas_Produced))/sum(best.data$Gas_Produced)
      
      best.b.plot<-ggplot(best.data.graph,aes(x=Months.On.Production,y=Prod_Value,colour=Output_Type))+
-        geom_point(size=2)+geom_line(size=1.2)+
+        geom_point(size=2)+geom_line(linewidth=1.2)+
         theme(text = element_text(size=20),legend.position="bottom")+
         annotate("text", x = quantile(best.data.graph$Months.On.Production,.75), y = max(best.data.graph$Prod_Value)*.85, size=6,
                  label = paste0("Hyp. b value: ",b.best,"\n","Abs.Per.Error PL: ",round(cum.pl.per.error,4)*100,"%\n",
@@ -1624,7 +1700,7 @@ server <- function(input, output, session) {
        mutate(Pred=(exp(coef(gas.model))[1])*(Months.On.Production)^(coef(gas.model))[2])
      error.data<-pred.data%>%mutate(Error_Month=Pred-Clust_Avg_Gas_Prod,Abs_Error_Month=abs(Error_Month),Abs_Percent_Error=Abs_Error_Month/Clust_Avg_Gas_Prod,Percent_Error=Error_Month/Clust_Avg_Gas_Prod)
      PL.gas.clust.error<-ggplot(error.data,aes(x=Months.On.Production,y=Percent_Error))+
-       geom_point(size=2)+geom_line(size=1.2)+
+       geom_point(size=2)+geom_line(linewidth=1.2)+
        theme(text = element_text(size=20))+
         scale_y_continuous(labels = scales::percent)+
        ggtitle(paste0("Gas Power Law Error using ", input$num_month_fit," Months\nCluster#",input$clust_invest,":\nCumulative Percent Error: ",100*round(sum(error.data$Error_Month)/sum(error.data$Clust_Avg_Gas_Prod),3),"%"))
@@ -1835,80 +1911,96 @@ server <- function(input, output, session) {
        clust_flag<-input$krig_clust_num
      }
      
-     for (clust_num in start_loop:end_loop){
-       set.seed(465)
-       clust_model<-kmeans(RF_ClustScale(), centers = clust_num)
-       
-       if (clust_num==clust_flag){
-         my_cluster_scale<-clust_model
-       }
-       
-       cluster.data2<-mutate(rf.prod.data3(),Cluster=factor(clust_model$cluster))
-       ##consider importing clusters from Kriging tab here
-       if(input$clust_toggle){ ##imports Clusters from Kriging TL tab if that toggle is selected on Kriging TL tab
-         cluster.data2<-import_krig_clust()
-       }
-       
-       for (train_id in 1:clust_num){
-         train<-cluster.data2%>%filter(Cluster==train_id)%>%select(Cluster,BOE_Prod_2yr,!!!input$rf_prod_var)
-         set.seed(466)
-         train<-train%>%slice_sample(n=min(input$num_train_clust,dim(train)[[1]]))
-         ##Create RF model and Bayesian
-         set.seed(466)
-         rf.prod.model<-randomForest(BOE_Prod_2yr ~ .,data=select(train,-Cluster)) 
-         bayes.prod.model <- train(BOE_Prod_2yr ~ ., data = select(train,-Cluster),
-                                       method = "bayesglm")
+     withProgress(message = 'Calculating Transfer Learning Clusters', value = 0, {
+       # Number of times we'll go through the loop
+       n <- (end_loop-start_loop)+1
+     
+       for (clust_num in start_loop:end_loop){
+         set.seed(465)
+         clust_model<-kmeans(RF_ClustScale(), centers = clust_num)
          
-         if (clust_num==clust_flag & train_id==input$rf_train_clust){
-           display.rf.prod.model<-rf.prod.model
-           display.bayes.prod.model<-bayes.prod.model
+         if (clust_num==clust_flag){
+           my_cluster_scale<-clust_model
          }
          
-         pred.train<-predict(rf.prod.model,newdata=train)
-         df.train<-train%>%mutate(RF_BOE_Pred=pred.train,Abs_Error=abs(RF_BOE_Pred-BOE_Prod_2yr),
-                                  Percent_Error=100*Abs_Error/BOE_Prod_2yr)
-         pred.bayes.train<-predict(bayes.prod.model,newdata=train)
-         df.bayes.train<-train%>%mutate(Bayes_BOE_Pred=pred.train,Bayes_Abs_Error=abs(Bayes_BOE_Pred-BOE_Prod_2yr),
-                                  Bayes_Percent_Error=100*Bayes_Abs_Error/BOE_Prod_2yr)
          
-         bayes.var.imp<-varImp(bayes.prod.model)$importance
-         if (train_id==1 & clust_num==start_loop){
-            var.imp.results<-data.frame(RF_Var_Names=row.names(rf.prod.model$importance),Value1=as.integer(length(rf.prod.model$importance)+1-rank(rf.prod.model$importance)))
-            var.imp.bayes.results<-data.frame(Bayes_Var_Names=row.names(bayes.var.imp),Value1=as.integer(dim(bayes.var.imp)[[1]]+1-rank(bayes.var.imp)))
-            i.count<-1
-            }
-         else {
-            var.imp.results<-data.frame(cbind(var.imp.results,as.integer(length(rf.prod.model$importance)+1-rank(rf.prod.model$importance)))) ##rank 1 is most important
-            var.imp.bayes.results<-data.frame(cbind(var.imp.bayes.results,as.integer(dim(bayes.var.imp)[[1]]+1-rank(bayes.var.imp))))
-            i.count=i.count+1
+         if(input$clust_toggle){
+           cluster.data2<-mutate(RF_ClustScale(),Cluster=factor(clust_model$cluster))
+         }
+         else{
+           cluster.data2<-mutate(rf.prod.data3(),Cluster=factor(clust_model$cluster))
          }
          
-         names(var.imp.results)[i.count+1]<-paste0("Num_Clust_",clust_num,"_Train_ID_", train_id)
-         names(var.imp.bayes.results)[i.count+1]<-paste0("Num_Clust_",clust_num,"_Train_ID_", train_id)
+         ##consider importing clusters from Kriging tab here
+         if(input$clust_toggle){ ##imports Clusters from Kriging TL tab if that toggle is selected on Kriging TL tab
+           cluster.data2<-import_krig_clust()
+         }
          
-         for (test_id in 1:clust_num){
+         for (train_id in 1:clust_num){
+           train<-cluster.data2%>%filter(Cluster==train_id)%>%select(Cluster,BOE_Prod_2yr,!!!input$rf_prod_var)
+           set.seed(466)
+           train<-train%>%slice_sample(n=min(input$num_train_clust,dim(train)[[1]]))
+           ##Create RF model and Bayesian
+           set.seed(466)
+           rf.prod.model<-randomForest(BOE_Prod_2yr ~ .,data=select(train,-Cluster)) 
+           bayes.prod.model <- train(BOE_Prod_2yr ~ ., data = select(train,-Cluster),
+                                         method = "bayesglm")
            
-           test<-cluster.data2%>%filter(Cluster==test_id)
-           pred.test<-predict(rf.prod.model,newdata=test)
-           
-           df.test<-test%>%mutate(RF_BOE_Pred=pred.test,Abs_Error=abs(RF_BOE_Pred-BOE_Prod_2yr),
-                                  Percent_Error=100*Abs_Error/BOE_Prod_2yr)
-           if(clust_num==clust_flag & train_id==input$rf_train_clust &test_id==input$rf_test_clust){
-             ##Store the results needed on dashboard
-             train.result<-df.train
-             test.result<-df.test
+           if (clust_num==clust_flag & train_id==input$rf_train_clust){
+             display.rf.prod.model<-rf.prod.model
+             display.bayes.prod.model<-bayes.prod.model
            }
            
-           df.results<-c(clust_num,train_id,test_id,
-                         round(median(df.train$Percent_Error),5),
-                         round(median(df.test$Percent_Error),5))
+           pred.train<-predict(rf.prod.model,newdata=train)
+           df.train<-train%>%mutate(RF_BOE_Pred=pred.train,Abs_Error=abs(RF_BOE_Pred-BOE_Prod_2yr),
+                                    Percent_Error=100*Abs_Error/BOE_Prod_2yr)
+           pred.bayes.train<-predict(bayes.prod.model,newdata=train)
+           df.bayes.train<-train%>%mutate(Bayes_BOE_Pred=pred.train,Bayes_Abs_Error=abs(Bayes_BOE_Pred-BOE_Prod_2yr),
+                                    Bayes_Percent_Error=100*Bayes_Abs_Error/BOE_Prod_2yr)
            
-           error.results<-rbind(error.results,df.results)
-           print(c(clust_num,train_id,test_id))
+           bayes.var.imp<-varImp(bayes.prod.model)$importance
+           if (train_id==1 & clust_num==start_loop){
+              var.imp.results<-data.frame(RF_Var_Names=row.names(rf.prod.model$importance),Value1=as.integer(length(rf.prod.model$importance)+1-rank(rf.prod.model$importance)))
+              var.imp.bayes.results<-data.frame(Bayes_Var_Names=row.names(bayes.var.imp),Value1=as.integer(dim(bayes.var.imp)[[1]]+1-rank(bayes.var.imp)))
+              i.count<-1
+              }
+           else {
+              var.imp.results<-data.frame(cbind(var.imp.results,as.integer(length(rf.prod.model$importance)+1-rank(rf.prod.model$importance)))) ##rank 1 is most important
+              var.imp.bayes.results<-data.frame(cbind(var.imp.bayes.results,as.integer(dim(bayes.var.imp)[[1]]+1-rank(bayes.var.imp))))
+              i.count=i.count+1
+           }
+           
+           names(var.imp.results)[i.count+1]<-paste0("Num_Clust_",clust_num,"_Train_ID_", train_id)
+           names(var.imp.bayes.results)[i.count+1]<-paste0("Num_Clust_",clust_num,"_Train_ID_", train_id)
+           
+           for (test_id in 1:clust_num){
+             
+             test<-cluster.data2%>%filter(Cluster==test_id)
+             pred.test<-predict(rf.prod.model,newdata=test)
+             
+             df.test<-test%>%mutate(RF_BOE_Pred=pred.test,Abs_Error=abs(RF_BOE_Pred-BOE_Prod_2yr),
+                                    Percent_Error=100*Abs_Error/BOE_Prod_2yr)
+             if(clust_num==clust_flag & train_id==input$rf_train_clust &test_id==input$rf_test_clust){
+               ##Store the results needed on dashboard
+               train.result<-df.train
+               test.result<-df.test
+             }
+             
+             df.results<-c(clust_num,train_id,test_id,
+                           round(median(df.train$Percent_Error),5),
+                           round(median(df.test$Percent_Error),5))
+             
+             error.results<-rbind(error.results,df.results)
+             print(c(clust_num,train_id,test_id))
+           }
+           
          }
-         
+         incProgress(1/n, detail = paste("# Clusters", clust_num, " of ", input$TL_max))
        }
-     }
+       
+       
+     })
+     
      names(error.results)<-c("Cluster_Number","Train_ID","Test_ID",
                        "Train_Error","Test_Error")
      error.results<-error.results%>%mutate(flag=(Train_ID==Test_ID))%>%filter(flag==FALSE)%>%select(-flag)%>%
@@ -1964,20 +2056,26 @@ server <- function(input, output, session) {
    
    output$rf_clust_fviz<-renderPlot({
      req(input$password==my_password&input$go&input$rf_toggle2)
-     fviz_plot<-fviz_cluster(RF_Clust_TL()$RF_ClustData,data = rf.prod.data3()  %>% dplyr::select(!!!input$rf_clust_var)) +
-       ggtitle(paste0("PCA Cluster Plot \nVariables: ",paste(sapply(input$rf_clust_var,paste),collapse = " ")))+theme(text = element_text(size=20))
+     
      if(input$clust_toggle){
        fviz_plot<-fviz_cluster(krig_clust_model(),data = filter(krig_scale_clust_data(),Type=="EagleFord")%>%select(-Type))+
          ggtitle(paste0("PCA Cluster Plot from Kriging TL \nVariables: ",paste(sapply(input$krig_clust_vars,paste),collapse = " ")))+theme(text = element_text(size=20))
+     }
+     else{
+       fviz_plot<-fviz_cluster(RF_Clust_TL()$RF_ClustData,data = rf.prod.data3()  %>% dplyr::select(!!!input$rf_clust_var)) +
+         ggtitle(paste0("PCA Cluster Plot \nVariables: ",paste(sapply(input$rf_clust_var,paste),collapse = " ")))+theme(text = element_text(size=20))
      }
      fviz_plot
    })
    
    RF_ClustData2<-reactive({
      req(input$password==my_password&input$go&input$rf_toggle2)
-     cluster.data2<-mutate(rf.prod.data3(),Cluster=factor(RF_Clust_TL()$RF_ClustData$cluster))
+     
      if(input$clust_toggle){ ##imports Clusters from Kriging TL tab if that toggle is selected on Kriging TL tab
        cluster.data2<-import_krig_clust()
+     }
+     else{
+       cluster.data2<-mutate(rf.prod.data3(),Cluster=factor(RF_Clust_TL()$RF_ClustData$cluster))
      }
      cluster.data2
    })
@@ -2139,7 +2237,7 @@ server <- function(input, output, session) {
      }
    )
    
-   ##Cluster TL tab
+##Cluster TL tab
    
    tl.prod.data.train<-reactive({
       req(input$password==my_password&input$go&input$tl_toggle)
@@ -2245,7 +2343,12 @@ server <- function(input, output, session) {
    tl_rf_model<-reactive({
       req(input$password==my_password&input$go&input$tl_toggle)
       set.seed(507)
-      rf_model<-randomForest(BOE_Prod_2yr ~ .,data=tl_model_data())
+      withProgress(message = 'Calculating Random Forest', value = 0, {
+        # Number of times we'll go through the loop
+        n <- 1
+        rf_model<-randomForest(BOE_Prod_2yr ~ .,data=tl_model_data())
+        incProgress(1/n, detail = paste(1, " of ", n))
+      })
       rf_model
    })
    
@@ -2405,17 +2508,23 @@ server <- function(input, output, session) {
       
       grid.pred.df<-as.data.frame(grid.pred)
       
-      for (i in 1:length(geo.list)){
-         #consider guassian for TVD, Brittleness
-         geo.vgm <- variogram(as.formula(paste(geo.list[i],"~ 1")), krig_train_data2) # calculates sample variogram values 
-         geo.fit <- fit.variogram(geo.vgm, model=vgm(model="Sph")) # fit model,Bes,Sph and Cir, Pen work well
-         
-         geo.kriged <- krige(as.formula(paste(geo.list[i],"~ 1")), krig_train_data2, grid.pred, model=geo.fit)
-         geo.kriged2 <- as.data.frame(geo.kriged)
-         names(geo.kriged2)<-c("lngcoords","latcoords",paste0(geo.list[i],".pred"),paste0(geo.list[i],".var"))
-         grid.pred.df<-left_join(grid.pred.df,geo.kriged2)
-         
-      }
+      withProgress(message = 'Calculating Kriging', value = 0, {
+        # Number of times we'll go through the loop
+        n <- length(geo.list)
+        
+        for (i in 1:length(geo.list)){
+           #consider guassian for TVD, Brittleness
+           geo.vgm <- variogram(as.formula(paste(geo.list[i],"~ 1")), krig_train_data2) # calculates sample variogram values 
+           geo.fit <- fit.variogram(geo.vgm, model=vgm(model="Sph")) # fit model,Bes,Sph and Cir, Pen work well
+           
+           geo.kriged <- krige(as.formula(paste(geo.list[i],"~ 1")), krig_train_data2, grid.pred, model=geo.fit)
+           geo.kriged2 <- as.data.frame(geo.kriged)
+           names(geo.kriged2)<-c("lngcoords","latcoords",paste0(geo.list[i],".pred"),paste0(geo.list[i],".var"))
+           grid.pred.df<-left_join(grid.pred.df,geo.kriged2)
+           
+        }
+        incProgress(1/n, detail = paste(i, " of ", n))
+      })
       
       grid.pred.df<-mutate(grid.pred.df,TOC.pred=TOC.scale.pred*sd(krig_train_data()$TOC)+mean(krig_train_data()$TOC),
                            Permeability.pred=Permeability.scale.pred*sd(krig_train_data()$Permeability...d.)+mean(krig_train_data()$Permeability...d.),
@@ -2492,8 +2601,10 @@ server <- function(input, output, session) {
       
       map_data<-krig_model_pred()%>%select(lngcoords,latcoords,starts_with(input$krig_display_var),max.prob,min.prob)%>%
                      filter(min.prob>input$cert_num)
+      
+      #my_color <- enquo(paste0(input$krig_display_var,".pred"))
 
-      kriged.map<- gg_train+geom_point(data=map_data, aes_string(x="lngcoords",  y="latcoords",color=paste0(input$krig_display_var,".pred")),size=1.5)+
+      kriged.map<- gg_train+geom_point(data=map_data, aes_string(x="lngcoords",  y="latcoords",color=paste0(input$krig_display_var,".pred"),size=1.5))+
          ggtitle(paste0("Kriged Data for ",input$krig_display_var," Map"))+
          scale_color_gradientn(colours = topo.colors(5))+
          theme(text = element_text(size=20))
@@ -2505,7 +2616,7 @@ server <- function(input, output, session) {
       preds = variogramLine(m, maxdist = max(v$dist))
       ggplot() + 
          geom_point(data = v, aes(x = dist, y = gamma, size=np), color="cornflowerblue") +
-         geom_line(data = preds, aes(x = dist, y = gamma),size=1)+
+         geom_line(data = preds, aes(x = dist, y = gamma),linewidth=1)+
          ggtitle(paste0(var.name," Variogram"))+
          xlab("Distance")+
          ylab("gamma (semivariance)")+
@@ -2524,7 +2635,7 @@ server <- function(input, output, session) {
    })
    
    krig_rf_data<-reactive({
-      req(input$password==my_password&input$go&input$krig_rf_toggle)
+      #req(input$password==my_password&input$go&input$krig_rf_toggle)
       set.seed(47)
       krig_rf_df<-rf.prod.data%>%filter(Surf.Lon>=input$krig_rf_Lon_LL,Surf.Lon<=input$krig_rf_Lon_UR,
                                         Surf.Lat>=input$krig_rf_Lat_LL,Surf.Lat<=input$krig_rf_Lat_UR)%>%
@@ -2544,8 +2655,14 @@ server <- function(input, output, session) {
    
    krig_clust_model<-reactive({
       req(input$password==my_password&input$go&input$krig_rf_toggle)
-      set.seed(277)
-      clust_model<-kmeans(filter(krig_scale_clust_data(),Type=="EagleFord")%>%select(-Type), centers =input$krig_clust_num)
+     withProgress(message = 'Calculating Kmeans Clustering', value = 0, {
+       # Number of times we'll go through the loop
+        n <- 1
+        set.seed(277)
+        clust_model<-kmeans(filter(krig_scale_clust_data(),Type=="EagleFord")%>%select(-Type), centers =input$krig_clust_num)
+        
+        incProgress(1/n, detail = paste(1, " of ", n))
+        })  
       clust_model
    })
    
@@ -2588,8 +2705,14 @@ server <- function(input, output, session) {
       rf.clust.data<-rf.clusters%>%filter(Cluster==closest_clust$Cluster)
       
       rf_model_data<-krig_rf_data()%>%filter(API %in% rf.clust.data$API)
-      set.seed(107)
-      rf_model<-randomForest(BOE_Prod_2yr ~ .,data=select(rf_model_data,-API))
+      withProgress(message = 'Calculating Random Forest', value = 0, {
+        # Number of times we'll go through the loop
+        n <- 1
+        set.seed(107)
+        rf_model<-randomForest(BOE_Prod_2yr ~ .,data=select(rf_model_data,-API))
+        
+        incProgress(1/n, detail = paste(1, " of ", n))
+      })
       rf_model
    })
    
@@ -2665,18 +2788,24 @@ server <- function(input, output, session) {
       
       rf_sensitivity<-data.frame(Surf.Lat=numeric(),Surf.Lon=numeric(),Train_Clust=numeric(),Pred_BOE=numeric(),min.prob=numeric())
       
-      for (this_clust in 1:input$krig_clust_num){
-         rf.clust.data<-rf.clusters%>%filter(Cluster==this_clust)
-         rf_model_data<-krig_rf_data()%>%filter(API %in% rf.clust.data$API)
-         set.seed(107)
-         rf_model<-randomForest(BOE_Prod_2yr ~ .,data=select(rf_model_data,-API))
-         ##predict with RF
-         this_model_pred<-predict(rf_model,newdata=model_pred_sensitivity_data)
-         this_model_pred_results<-model_pred_sensitivity_data%>%mutate(Train_Clust=this_clust,Pred_BOE=this_model_pred)
-         this_rf_sensitivity<-this_model_pred_results%>%mutate(Surf.Lon=lngcoords,Surf.Lat=latcoords)%>%
-            select(Surf.Lat,Surf.Lon,Train_Clust,Pred_BOE,min.prob)
-         rf_sensitivity<-rbind(rf_sensitivity,this_rf_sensitivity)
-      }
+      withProgress(message = 'Calculating Sensitivity', value = 0, {
+        # Number of times we'll go through the loop
+        n <- input$krig_clust_num
+        for (this_clust in 1:input$krig_clust_num){
+           rf.clust.data<-rf.clusters%>%filter(Cluster==this_clust)
+           rf_model_data<-krig_rf_data()%>%filter(API %in% rf.clust.data$API)
+           set.seed(107)
+           rf_model<-randomForest(BOE_Prod_2yr ~ .,data=select(rf_model_data,-API))
+           ##predict with RF
+           this_model_pred<-predict(rf_model,newdata=model_pred_sensitivity_data)
+           this_model_pred_results<-model_pred_sensitivity_data%>%mutate(Train_Clust=this_clust,Pred_BOE=this_model_pred)
+           this_rf_sensitivity<-this_model_pred_results%>%mutate(Surf.Lon=lngcoords,Surf.Lat=latcoords)%>%
+              select(Surf.Lat,Surf.Lon,Train_Clust,Pred_BOE,min.prob)
+           rf_sensitivity<-rbind(rf_sensitivity,this_rf_sensitivity)
+        }
+        incProgress(1/n, detail = paste("Cluster ", this_clust, " of ", n))
+      })
+      
       rf_sensitivity
    })
    
@@ -2812,7 +2941,7 @@ server <- function(input, output, session) {
       boe.map
    })
    
-   ##Ensemble Learning
+##Ensemble Learning
    
    cut_props<-reactive({
      cut_props<-data.frame(low.cut=seq(input$el_start,input$el_end,input$el_step))%>%mutate(high.cut=1-low.cut)
@@ -2926,28 +3055,52 @@ server <- function(input, output, session) {
 
      
      ##Random Forest
-     rf_model1<-randomForest(as.formula(paste(input$el_target_stress,"~ .")),data = low_df1, ntree=input$el_num_tree)
-     train.error.rf1<-rmse(select(low_df1,!!!input$el_target_stress)[,1],predict(rf_model1))
-     test.error.rf1<-rmse(select(high_df1,!!!input$el_target_stress)[,1],predict(rf_model1,newdata = high_df1))
+     withProgress(message = 'Calculating Random Forest', value = 0, {
+       # Number of times we'll go through the loop
+       n <- 1
+       
+       rf_model1<-randomForest(as.formula(paste(input$el_target_stress,"~ .")),data = low_df1, ntree=input$el_num_tree)
+       train.error.rf1<-rmse(select(low_df1,!!!input$el_target_stress)[,1],predict(rf_model1))
+       test.error.rf1<-rmse(select(high_df1,!!!input$el_target_stress)[,1],predict(rf_model1,newdata = high_df1))
+       incProgress(1/n, detail = paste(1, " of ", n))
+     })
      
      ##Gradient Boosting
-     gb_model1<-gbm(as.formula(paste(input$el_target_stress,"~ .")),data = low_df1, n.trees = input$el_num_tree)
-     train.error.gb1<-rmse(select(low_df1,!!!input$el_target_stress)[,1],predict(gb_model1))
-     test.error.gb1<-rmse(select(high_df1,!!!input$el_target_stress)[,1],predict(gb_model1,newdata = high_df1))
+     withProgress(message = 'Calculating Gradient Boosting', value = 0, {
+       # Number of times we'll go through the loop
+       n <- 1
+       
+       gb_model1<-gbm(as.formula(paste(input$el_target_stress,"~ .")),data = low_df1, n.trees = input$el_num_tree)
+       train.error.gb1<-rmse(select(low_df1,!!!input$el_target_stress)[,1],predict(gb_model1))
+       test.error.gb1<-rmse(select(high_df1,!!!input$el_target_stress)[,1],predict(gb_model1,newdata = high_df1))
+       incProgress(1/n, detail = paste(1, " of ", n))
+     })
      
      ##Ridge Regression
-     cv_ridge_model1 <- cv.glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 0)
-     ridge_model1_best_lambda <- cv_ridge_model1$lambda.min
-     ridge_best_model1 <- glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 0, lambda = ridge_model1_best_lambda)
-     train.error.ridge1<-rmse(low_ridge_df1_y,predict(ridge_best_model1, s = ridge_model1_best_lambda, newx = low_ridge_df1_x))
-     test.error.ridge1<-rmse(high_ridge_df1_y,predict(ridge_best_model1, s = ridge_model1_best_lambda, newx = high_ridge_df1_x))
-     
+     withProgress(message = 'Calculating Ridge Regression', value = 0, {
+       # Number of times we'll go through the loop
+       n <- 1
+       
+       cv_ridge_model1 <- cv.glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 0)
+       ridge_model1_best_lambda <- cv_ridge_model1$lambda.min
+       ridge_best_model1 <- glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 0, lambda = ridge_model1_best_lambda)
+       train.error.ridge1<-rmse(low_ridge_df1_y,predict(ridge_best_model1, s = ridge_model1_best_lambda, newx = low_ridge_df1_x))
+       test.error.ridge1<-rmse(high_ridge_df1_y,predict(ridge_best_model1, s = ridge_model1_best_lambda, newx = high_ridge_df1_x))
+       incProgress(1/n, detail = paste(1, " of ", n))
+     })
+   
      ##Lasso Regression
-     cv_lasso_model1 <- cv.glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 1)
-     lasso_model1_best_lambda <- cv_lasso_model1$lambda.min
-     lasso_best_model1 <- glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 1, lambda = lasso_model1_best_lambda)
-     train.error.lasso1<-rmse(low_ridge_df1_y,predict(lasso_best_model1, s = lasso_model1_best_lambda, newx = low_ridge_df1_x))
-     test.error.lasso1<-rmse(high_ridge_df1_y,predict(lasso_best_model1, s = lasso_model1_best_lambda, newx = high_ridge_df1_x))
+     withProgress(message = 'Calculating Lasso Regression', value = 0, {
+       # Number of times we'll go through the loop
+       n <- 1
+       
+       cv_lasso_model1 <- cv.glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 1)
+       lasso_model1_best_lambda <- cv_lasso_model1$lambda.min
+       lasso_best_model1 <- glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 1, lambda = lasso_model1_best_lambda)
+       train.error.lasso1<-rmse(low_ridge_df1_y,predict(lasso_best_model1, s = lasso_model1_best_lambda, newx = low_ridge_df1_x))
+       test.error.lasso1<-rmse(high_ridge_df1_y,predict(lasso_best_model1, s = lasso_model1_best_lambda, newx = high_ridge_df1_x))
+       incProgress(1/n, detail = paste(1, " of ", n))
+      })
      
      ##create Output
      output1<-data.frame(Model_Name=c("RF Percentile","GB Percentile","Ridge Percentile","Lasso Percentile"),
@@ -2981,23 +3134,36 @@ server <- function(input, output, session) {
      
      ##Loop through different weights for training errors
      output_train_errors<-data.frame(ID=numeric(),Train_Error=numeric())
-     for (j in 1:dim(weights.df)[[1]]){
-       temp_df<-output_train%>%
-         mutate(Weighted_Pred=weights.df$RF_wt[j]*RF_Pred+weights.df$GB_wt[j]*GB_Pred+weights.df$Ridge_wt[j]*Ridge_Pred+weights.df$Lasso_wt[j]*Lasso_Pred)
-       this_result<-data.frame(ID=j,Train_Error=rmse(output_train$Actual_BOE,temp_df$Weighted_Pred))
-       output_train_errors<-rbind(output_train_errors,this_result)
-     }
+     withProgress(message = 'Calculating Weighted Train Predictions', value = 0, {
+       # Number of times we'll go through the loop
+       n <- dim(weights.df)[[1]]
+       
+       for (j in 1:dim(weights.df)[[1]]){
+         temp_df<-output_train%>%
+           mutate(Weighted_Pred=weights.df$RF_wt[j]*RF_Pred+weights.df$GB_wt[j]*GB_Pred+weights.df$Ridge_wt[j]*Ridge_Pred+weights.df$Lasso_wt[j]*Lasso_Pred)
+         this_result<-data.frame(ID=j,Train_Error=rmse(output_train$Actual_BOE,temp_df$Weighted_Pred))
+         output_train_errors<-rbind(output_train_errors,this_result)
+         
+         incProgress(1/n, detail = paste(j, " of ", n))
+       }
+     })
      output_train_errors<-output_train_errors%>%left_join(weights.df)%>%
        arrange(Train_Error)
+     
      ##Loop through different weights for testing errors
      output_test_errors<-data.frame(ID=numeric(),Test_Error=numeric())
-     for (k in 1:dim(weights.df)[[1]]){
-       temp_df<-output_test%>%
-         mutate(Weighted_Pred=weights.df$RF_wt[k]*RF_Pred+weights.df$GB_wt[k]*GB_Pred+weights.df$Ridge_wt[k]*Ridge_Pred+weights.df$Lasso_wt[k]*Lasso_Pred)
-       this_result<-data.frame(ID=k,Test_Error=rmse(output_test$Actual_BOE,temp_df$Weighted_Pred))
-       output_test_errors<-rbind(output_test_errors,this_result)
+     withProgress(message = 'Calculating Weighted Test Predictions', value = 0, {
+       # Number of times we'll go through the loop
+       n <- dim(weights.df)[[1]]
        
-     }
+       for (k in 1:dim(weights.df)[[1]]){
+         temp_df<-output_test%>%
+           mutate(Weighted_Pred=weights.df$RF_wt[k]*RF_Pred+weights.df$GB_wt[k]*GB_Pred+weights.df$Ridge_wt[k]*Ridge_Pred+weights.df$Lasso_wt[k]*Lasso_Pred)
+         this_result<-data.frame(ID=k,Test_Error=rmse(output_test$Actual_BOE,temp_df$Weighted_Pred))
+         output_test_errors<-rbind(output_test_errors,this_result)
+         incProgress(1/n, detail = paste(k, " of ", n))
+       }
+     })
      output_test_errors<-output_test_errors%>%left_join(weights.df)%>%
        arrange(Test_Error)
      
@@ -3026,132 +3192,139 @@ server <- function(input, output, session) {
                                  Avg_Target_Output_Test=numeric(),Percent_Error_Train=numeric(),Percent_Error_Test=numeric(),
                                  low.cut=numeric(),high.cut=numeric())
      
-     for (i in 1:dim(cut_props)[1]){
-       filter_df<-rf.prod.data%>%select(API,!!!input$el_filter_var1,!!!input$el_filter_var2,!!!input$el_filter_var3)
-       filter_df1<-rf.prod.data%>%select(!!!input$el_filter_var1)
-       filter_df2<-rf.prod.data%>%select(!!!input$el_filter_var2)
-       filter_df3<-rf.prod.data%>%select(!!!input$el_filter_var3)
+     withProgress(message = 'Calculating Models for Various Cuts', value = 0, {
+       # Number of times we'll go through the loop
+       n <- dim(cut_props)[1]
        
-       overlap_data1<-rf.prod.data%>%filter((!!!input$el_filter_var1)<=quantile(filter_df1[,1],cut_props$low.cut[i]),
-                                            (!!!input$el_filter_var1)>=quantile(filter_df1[,1],cut_props$high.cut[i]),
-                                            (!!!input$el_filter_var2)<=quantile(filter_df2[,1],cut_props$low.cut[i]),
-                                            (!!!input$el_filter_var2)>=quantile(filter_df2[,1],cut_props$high.cut[i]),
-                                            (!!!input$el_filter_var3)<=quantile(filter_df3[,1],cut_props$low.cut[i]),
-                                            (!!!input$el_filter_var3)>=quantile(filter_df3[,1],cut_props$high.cut[i]))
-       
-       overlap_low_df1<-overlap_data1%>%slice_sample(prop = input$el_train_prop)
-       overlap_high_df1<-overlap_data1%>%anti_join(overlap_low_df1,by=c("API"="API"))
-       
-       low_df1<-rf.prod.data%>%anti_join(overlap_data1,by=c("API"="API"))%>%
-         filter((!!!input$el_filter_var1)<quantile(filter_df1[,1],min(cut_props$low.cut[i],cut_props$high.cut[i])),
-                (!!!input$el_filter_var2)<quantile(filter_df2[,1],min(cut_props$low.cut[i],cut_props$high.cut[i])),
-                (!!!input$el_filter_var3)<quantile(filter_df3[,1],min(cut_props$low.cut[i],cut_props$high.cut[i])))%>%
-         rbind(overlap_low_df1)%>%
-         select(!!!input$el_target_var,!!!input$el_formula_var)
-       
-       high_df1<-rf.prod.data%>%anti_join(overlap_data1,by=c("API"="API"))%>%
-         filter((!!!input$el_filter_var1)>quantile(filter_df1[,1],max(cut_props$low.cut[i],cut_props$high.cut[i])),
-                (!!!input$el_filter_var2)>quantile(filter_df2[,1],max(cut_props$low.cut[i],cut_props$high.cut[i])),
-                (!!!input$el_filter_var3)>quantile(filter_df3[,1],max(cut_props$low.cut[i],cut_props$high.cut[i])))%>%
-         rbind(overlap_high_df1)%>%
-         select(!!!input$el_target_var,!!!input$el_formula_var)
-      
-       ##Data formatting for Ridge Regression
-       low_ridge_df1_y<-select(low_df1,!!!input$el_target_var)[,1]
-       low_ridge_df1_x<-data.matrix(low_df1%>%select(-(!!!input$el_target_var)))
-       
-       high_ridge_df1_y<-select(high_df1,!!!input$el_target_var)[,1]
-       high_ridge_df1_x<-data.matrix(high_df1%>%select(-(!!!input$el_target_var)))
-
-       ##Random Forest
-       rf_model1<-randomForest(as.formula(paste(input$el_target_var,"~ .")),data = low_df1, ntree=input$el_num_tree)
-       train.error.rf1<-rmse(select(low_df1,!!!input$el_target_var)[,1],predict(rf_model1))
-       test.error.rf1<-rmse(select(high_df1,!!!input$el_target_var)[,1],predict(rf_model1,newdata = high_df1))
-       
-       ##Gradient Boosting
-       gb_model1<-gbm(as.formula(paste(input$el_target_var,"~ .")),data = low_df1, n.trees = input$el_num_tree)
-       train.error.gb1<-rmse(select(low_df1,!!!input$el_target_var)[,1],predict(gb_model1))
-       test.error.gb1<-rmse(select(high_df1,!!!input$el_target_var)[,1],predict(gb_model1,newdata = high_df1))
-       
-       ##Ridge Regression
-       cv_ridge_model1 <- cv.glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 0)
-       ridge_model1_best_lambda <- cv_ridge_model1$lambda.min
-       ridge_best_model1 <- glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 0, lambda = ridge_model1_best_lambda)
-       train.error.ridge1<-rmse(low_ridge_df1_y,predict(ridge_best_model1, s = ridge_model1_best_lambda, newx = low_ridge_df1_x))
-       test.error.ridge1<-rmse(high_ridge_df1_y,predict(ridge_best_model1, s = ridge_model1_best_lambda, newx = high_ridge_df1_x))
-       
-       ##Lasso Regression
-       cv_lasso_model1 <- cv.glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 1)
-       lasso_model1_best_lambda <- cv_lasso_model1$lambda.min
-       lasso_best_model1 <- glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 1, lambda = lasso_model1_best_lambda)
-       train.error.lasso1<-rmse(low_ridge_df1_y,predict(lasso_best_model1, s = lasso_model1_best_lambda, newx = low_ridge_df1_x))
-       test.error.lasso1<-rmse(high_ridge_df1_y,predict(lasso_best_model1, s = lasso_model1_best_lambda, newx = high_ridge_df1_x))
-       
-       ##create Output
-       output1<-data.frame(Model_Name=c("RF Percentile","GB Percentile","Ridge Percentile","Lasso Percentile"),
-                           Train_Error=c(train.error.rf1,train.error.gb1,train.error.ridge1,train.error.lasso1),
-                           Test_Error=c(test.error.rf1,test.error.gb1,test.error.ridge1,test.error.lasso1))
-       
-       output_train<-data.frame(Actual_BOE=low_ridge_df1_y,
-                                RF_Pred=predict(rf_model1),
-                                GB_Pred=predict(gb_model1),
-                                X1=predict(ridge_best_model1, s = ridge_model1_best_lambda, newx = low_ridge_df1_x)[,1],
-                                X1.1=predict(lasso_best_model1, s = lasso_model1_best_lambda, newx = low_ridge_df1_x)[,1])%>%
-         mutate(Ridge_Pred=X1,Lasso_Pred=X1.1)%>%
-         select(-(X1:X1.1))
-       
-       output_test<-data.frame(Actual_BOE=high_ridge_df1_y,
-                               RF_Pred=predict(rf_model1,newdata = high_df1),
-                               GB_Pred=predict(gb_model1,newdata = high_df1),
-                               X1=predict(ridge_best_model1, s = ridge_model1_best_lambda, newx = high_ridge_df1_x)[,1],
-                               X1.1=predict(lasso_best_model1, s = lasso_model1_best_lambda, newx = high_ridge_df1_x)[,1])%>%
-         mutate(Ridge_Pred=X1,Lasso_Pred=X1.1)%>%
-         select(-(X1:X1.1))
-       
-       ##create weightings for different aggregate models
-       weights.df<-expand.grid(RF_wt=seq(0,1,input$el_weight_step),
-                               GB_wt=seq(0,1,input$el_weight_step),
-                               Ridge_wt=seq(0,1,input$el_weight_step),
-                               Lasso_wt=seq(0,1,input$el_weight_step))%>%
-         mutate(Total_Weight=RF_wt+GB_wt+Ridge_wt+Lasso_wt)%>%
-         filter(Total_Weight==1)%>%select(-Total_Weight)
-       weights.df<-weights.df%>%mutate(ID=seq(1,dim(weights.df)[[1]]))
-       
-       ##Loop through different weights for training errors
-       output_train_errors<-data.frame(ID=numeric(),Train_Error=numeric())
-       for (j in 1:dim(weights.df)[[1]]){
-         temp_df<-output_train%>%
-           mutate(Weighted_Pred=weights.df$RF_wt[j]*RF_Pred+weights.df$GB_wt[j]*GB_Pred+weights.df$Ridge_wt[j]*Ridge_Pred+weights.df$Lasso_wt[j]*Lasso_Pred)
-         this_result<-data.frame(ID=j,Train_Error=rmse(output_train$Actual_BOE,temp_df$Weighted_Pred))
-         output_train_errors<-rbind(output_train_errors,this_result)
-       }
-       output_train_errors<-output_train_errors%>%left_join(weights.df)%>%
-         arrange(Train_Error)
-       ##Loop through different weights for testing errors
-       output_test_errors<-data.frame(ID=numeric(),Test_Error=numeric())
-       for (k in 1:dim(weights.df)[[1]]){
-         temp_df<-output_test%>%
-           mutate(Weighted_Pred=weights.df$RF_wt[k]*RF_Pred+weights.df$GB_wt[k]*GB_Pred+weights.df$Ridge_wt[k]*Ridge_Pred+weights.df$Lasso_wt[k]*Lasso_Pred)
-         this_result<-data.frame(ID=k,Test_Error=rmse(output_test$Actual_BOE,temp_df$Weighted_Pred))
-         output_test_errors<-rbind(output_test_errors,this_result)
+       for (i in 1:dim(cut_props)[1]){
+         filter_df<-rf.prod.data%>%select(API,!!!input$el_filter_var1,!!!input$el_filter_var2,!!!input$el_filter_var3)
+         filter_df1<-rf.prod.data%>%select(!!!input$el_filter_var1)
+         filter_df2<-rf.prod.data%>%select(!!!input$el_filter_var2)
+         filter_df3<-rf.prod.data%>%select(!!!input$el_filter_var3)
          
+         overlap_data1<-rf.prod.data%>%filter((!!!input$el_filter_var1)<=quantile(filter_df1[,1],cut_props$low.cut[i]),
+                                              (!!!input$el_filter_var1)>=quantile(filter_df1[,1],cut_props$high.cut[i]),
+                                              (!!!input$el_filter_var2)<=quantile(filter_df2[,1],cut_props$low.cut[i]),
+                                              (!!!input$el_filter_var2)>=quantile(filter_df2[,1],cut_props$high.cut[i]),
+                                              (!!!input$el_filter_var3)<=quantile(filter_df3[,1],cut_props$low.cut[i]),
+                                              (!!!input$el_filter_var3)>=quantile(filter_df3[,1],cut_props$high.cut[i]))
+         
+         overlap_low_df1<-overlap_data1%>%slice_sample(prop = input$el_train_prop)
+         overlap_high_df1<-overlap_data1%>%anti_join(overlap_low_df1,by=c("API"="API"))
+         
+         low_df1<-rf.prod.data%>%anti_join(overlap_data1,by=c("API"="API"))%>%
+           filter((!!!input$el_filter_var1)<quantile(filter_df1[,1],min(cut_props$low.cut[i],cut_props$high.cut[i])),
+                  (!!!input$el_filter_var2)<quantile(filter_df2[,1],min(cut_props$low.cut[i],cut_props$high.cut[i])),
+                  (!!!input$el_filter_var3)<quantile(filter_df3[,1],min(cut_props$low.cut[i],cut_props$high.cut[i])))%>%
+           rbind(overlap_low_df1)%>%
+           select(!!!input$el_target_var,!!!input$el_formula_var)
+         
+         high_df1<-rf.prod.data%>%anti_join(overlap_data1,by=c("API"="API"))%>%
+           filter((!!!input$el_filter_var1)>quantile(filter_df1[,1],max(cut_props$low.cut[i],cut_props$high.cut[i])),
+                  (!!!input$el_filter_var2)>quantile(filter_df2[,1],max(cut_props$low.cut[i],cut_props$high.cut[i])),
+                  (!!!input$el_filter_var3)>quantile(filter_df3[,1],max(cut_props$low.cut[i],cut_props$high.cut[i])))%>%
+           rbind(overlap_high_df1)%>%
+           select(!!!input$el_target_var,!!!input$el_formula_var)
+        
+         ##Data formatting for Ridge Regression
+         low_ridge_df1_y<-select(low_df1,!!!input$el_target_var)[,1]
+         low_ridge_df1_x<-data.matrix(low_df1%>%select(-(!!!input$el_target_var)))
+         
+         high_ridge_df1_y<-select(high_df1,!!!input$el_target_var)[,1]
+         high_ridge_df1_x<-data.matrix(high_df1%>%select(-(!!!input$el_target_var)))
+  
+         ##Random Forest
+         rf_model1<-randomForest(as.formula(paste(input$el_target_var,"~ .")),data = low_df1, ntree=input$el_num_tree)
+         train.error.rf1<-rmse(select(low_df1,!!!input$el_target_var)[,1],predict(rf_model1))
+         test.error.rf1<-rmse(select(high_df1,!!!input$el_target_var)[,1],predict(rf_model1,newdata = high_df1))
+         
+         ##Gradient Boosting
+         gb_model1<-gbm(as.formula(paste(input$el_target_var,"~ .")),data = low_df1, n.trees = input$el_num_tree)
+         train.error.gb1<-rmse(select(low_df1,!!!input$el_target_var)[,1],predict(gb_model1))
+         test.error.gb1<-rmse(select(high_df1,!!!input$el_target_var)[,1],predict(gb_model1,newdata = high_df1))
+         
+         ##Ridge Regression
+         cv_ridge_model1 <- cv.glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 0)
+         ridge_model1_best_lambda <- cv_ridge_model1$lambda.min
+         ridge_best_model1 <- glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 0, lambda = ridge_model1_best_lambda)
+         train.error.ridge1<-rmse(low_ridge_df1_y,predict(ridge_best_model1, s = ridge_model1_best_lambda, newx = low_ridge_df1_x))
+         test.error.ridge1<-rmse(high_ridge_df1_y,predict(ridge_best_model1, s = ridge_model1_best_lambda, newx = high_ridge_df1_x))
+         
+         ##Lasso Regression
+         cv_lasso_model1 <- cv.glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 1)
+         lasso_model1_best_lambda <- cv_lasso_model1$lambda.min
+         lasso_best_model1 <- glmnet(low_ridge_df1_x, low_ridge_df1_y, alpha = 1, lambda = lasso_model1_best_lambda)
+         train.error.lasso1<-rmse(low_ridge_df1_y,predict(lasso_best_model1, s = lasso_model1_best_lambda, newx = low_ridge_df1_x))
+         test.error.lasso1<-rmse(high_ridge_df1_y,predict(lasso_best_model1, s = lasso_model1_best_lambda, newx = high_ridge_df1_x))
+         
+         ##create Output
+         output1<-data.frame(Model_Name=c("RF Percentile","GB Percentile","Ridge Percentile","Lasso Percentile"),
+                             Train_Error=c(train.error.rf1,train.error.gb1,train.error.ridge1,train.error.lasso1),
+                             Test_Error=c(test.error.rf1,test.error.gb1,test.error.ridge1,test.error.lasso1))
+         
+         output_train<-data.frame(Actual_BOE=low_ridge_df1_y,
+                                  RF_Pred=predict(rf_model1),
+                                  GB_Pred=predict(gb_model1),
+                                  X1=predict(ridge_best_model1, s = ridge_model1_best_lambda, newx = low_ridge_df1_x)[,1],
+                                  X1.1=predict(lasso_best_model1, s = lasso_model1_best_lambda, newx = low_ridge_df1_x)[,1])%>%
+           mutate(Ridge_Pred=X1,Lasso_Pred=X1.1)%>%
+           select(-(X1:X1.1))
+         
+         output_test<-data.frame(Actual_BOE=high_ridge_df1_y,
+                                 RF_Pred=predict(rf_model1,newdata = high_df1),
+                                 GB_Pred=predict(gb_model1,newdata = high_df1),
+                                 X1=predict(ridge_best_model1, s = ridge_model1_best_lambda, newx = high_ridge_df1_x)[,1],
+                                 X1.1=predict(lasso_best_model1, s = lasso_model1_best_lambda, newx = high_ridge_df1_x)[,1])%>%
+           mutate(Ridge_Pred=X1,Lasso_Pred=X1.1)%>%
+           select(-(X1:X1.1))
+         
+         ##create weightings for different aggregate models
+         weights.df<-expand.grid(RF_wt=seq(0,1,input$el_weight_step),
+                                 GB_wt=seq(0,1,input$el_weight_step),
+                                 Ridge_wt=seq(0,1,input$el_weight_step),
+                                 Lasso_wt=seq(0,1,input$el_weight_step))%>%
+           mutate(Total_Weight=RF_wt+GB_wt+Ridge_wt+Lasso_wt)%>%
+           filter(Total_Weight==1)%>%select(-Total_Weight)
+         weights.df<-weights.df%>%mutate(ID=seq(1,dim(weights.df)[[1]]))
+         
+         ##Loop through different weights for training errors
+         output_train_errors<-data.frame(ID=numeric(),Train_Error=numeric())
+         for (j in 1:dim(weights.df)[[1]]){
+           temp_df<-output_train%>%
+             mutate(Weighted_Pred=weights.df$RF_wt[j]*RF_Pred+weights.df$GB_wt[j]*GB_Pred+weights.df$Ridge_wt[j]*Ridge_Pred+weights.df$Lasso_wt[j]*Lasso_Pred)
+           this_result<-data.frame(ID=j,Train_Error=rmse(output_train$Actual_BOE,temp_df$Weighted_Pred))
+           output_train_errors<-rbind(output_train_errors,this_result)
+         }
+         output_train_errors<-output_train_errors%>%left_join(weights.df)%>%
+           arrange(Train_Error)
+         
+         ##Loop through different weights for testing errors
+         output_test_errors<-data.frame(ID=numeric(),Test_Error=numeric())
+         for (k in 1:dim(weights.df)[[1]]){
+           temp_df<-output_test%>%
+             mutate(Weighted_Pred=weights.df$RF_wt[k]*RF_Pred+weights.df$GB_wt[k]*GB_Pred+weights.df$Ridge_wt[k]*Ridge_Pred+weights.df$Lasso_wt[k]*Lasso_Pred)
+           this_result<-data.frame(ID=k,Test_Error=rmse(output_test$Actual_BOE,temp_df$Weighted_Pred))
+           output_test_errors<-rbind(output_test_errors,this_result)
+           
+         }
+         output_test_errors<-output_test_errors%>%left_join(weights.df)%>%
+           arrange(Test_Error)
+         
+         #Create Output file with Train and Test Models based on Weightings
+         output_errors1<-output_test_errors%>%left_join(select(output_train_errors,ID,Train_Error))%>%
+           mutate(Well_Count_Train=dim(low_df1)[1],Well_Count_Test=dim(high_df1)[1],
+                  Total_Target_Output_Train=sum(low_ridge_df1_y),Total_Target_Output_Test=sum(high_ridge_df1_y),
+                  Avg_Target_Output_Train=Total_Target_Output_Train/Well_Count_Train,Avg_Target_Output_Test=Total_Target_Output_Test/Well_Count_Test,
+                  Percent_Error_Train=Train_Error/Avg_Target_Output_Train,Percent_Error_Test=Test_Error/Avg_Target_Output_Test
+           )
+  
+          this_weight<-output_errors1[1,]%>%
+            select(-ID)%>%mutate(low.cut=cut_props$low.cut[i],high.cut=cut_props$high.cut[i])
+          best_weightings<-rbind(best_weightings,this_weight)
+          
+          incProgress(1/n, detail = paste("Cut ",i, " of ", n))
        }
-       output_test_errors<-output_test_errors%>%left_join(weights.df)%>%
-         arrange(Test_Error)
-       
-       #Create Output file with Train and Test Models based on Weightings
-       output_errors1<-output_test_errors%>%left_join(select(output_train_errors,ID,Train_Error))%>%
-         mutate(Well_Count_Train=dim(low_df1)[1],Well_Count_Test=dim(high_df1)[1],
-                Total_Target_Output_Train=sum(low_ridge_df1_y),Total_Target_Output_Test=sum(high_ridge_df1_y),
-                Avg_Target_Output_Train=Total_Target_Output_Train/Well_Count_Train,Avg_Target_Output_Test=Total_Target_Output_Test/Well_Count_Test,
-                Percent_Error_Train=Train_Error/Avg_Target_Output_Train,Percent_Error_Test=Test_Error/Avg_Target_Output_Test
-         )
-
-        this_weight<-output_errors1[1,]%>%
-          select(-ID)%>%mutate(low.cut=cut_props$low.cut[i],high.cut=cut_props$high.cut[i])
-        best_weightings<-rbind(best_weightings,this_weight)
-       
-     }
+     })
      best_weightings
      
    })
